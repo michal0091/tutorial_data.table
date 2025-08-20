@@ -1,0 +1,351 @@
+# Introducción a `data.table`
+
+::: {.callout-tip icon="false"}
+## En este capítulo aprenderás
+- La filosofía y ventajas de `data.table`
+- Diferencias fundamentales con `data.frame` y `dplyr`
+- Tu primer `data.table` en acción
+- Configuración del entorno de trabajo
+:::
+
+```{r}
+#| label: setup-intro
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(microbenchmark)
+library(dplyr)
+library(knitr)
+
+# Configuración global
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+```
+
+## La Historia de `data.table`
+
+`data.table` nació en 2006 de la frustración de **Matt Dowle** con la velocidad de operaciones sobre `data.frame` para datasets grandes. Su visión era simple pero revolucionaria: *¿por qué conformarse con segundos cuando puedes tener milisegundos?*
+
+Hoy, más de 15 años después, `data.table` es la **referencia mundial** para manipulación de datos de alta performance en R, usado por empresas como Facebook, Netflix, y miles de científicos de datos alrededor del mundo.
+
+## ¿Qué hace a `data.table` especial?
+
+### 1. **Es un `data.frame` mejorado** 🔧
+
+Un `data.table` **es** un `data.frame`. Esto significa:
+
+```{r}
+#| label: herencia-dataframe
+#| echo: true
+
+# Creamos un data.table
+dt <- data.table(x = 1:3, y = c("A", "B", "C"))
+
+# Verificamos su herencia
+class(dt)
+is.data.frame(dt)
+```
+
+Esta compatibilidad es crucial: puedes usar un `data.table` en cualquier lugar que espere un `data.frame` sin problemas.
+
+### 2. **Modificación por referencia** 🧠
+
+La característica más distintiva de `data.table` es su capacidad de modificar objetos **por referencia**, sin crear copias.
+
+```{r}
+#| label: demo-referencia
+#| echo: true
+
+# R base: crea una copia completa
+df <- data.frame(x = 1:1000000, y = rnorm(1000000))
+df$z <- df$x + df$y  # ¡Copia completa en memoria!
+
+# data.table: modificación in-place
+dt <- data.table(x = 1:1000000, y = rnorm(1000000))
+dt[, z := x + y]     # ¡Sin copias! Modificación directa
+```
+
+::: {.callout-important}
+## 💡 Implicaciones de la Modificación por Referencia
+
+- **Ventaja**: Velocidad extrema y uso eficiente de memoria
+- **Cuidado**: Los cambios son permanentes, no hay "deshacer" automático
+- **Solución**: Usa `copy()` cuando necesites preservar el original
+:::
+
+### 3. **Sintaxis consistente y potente** ✍️
+
+Todo en `data.table` se reduce a una estructura simple pero poderosa:
+
+```{r}
+#| label: sintaxis-basica
+#| echo: true
+#| eval: false
+
+# La estructura universal de data.table
+DT[i, j, by]
+
+# i = filas (WHERE)    - "¿Qué filas me interesan?"
+# j = columnas (WHAT)  - "¿Qué quiero hacer?"  
+# by = grupos (BY)     - "¿Agrupado por qué?"
+```
+
+## Comparación: `data.table` vs. `dplyr` vs. R base
+
+Veamos cómo se comparan las tres principales formas de manipular datos en R:
+
+```{r}
+#| label: setup-comparacion
+#| echo: false
+
+# Crear datos de ejemplo más grandes para ver diferencias
+set.seed(123)
+n <- 100000
+datos <- data.frame(
+  id = sample(1:1000, n, replace = TRUE),
+  categoria = sample(LETTERS[1:5], n, replace = TRUE),
+  valor = rnorm(n, mean = 100, sd = 15),
+  fecha = sample(seq(as.Date("2020-01-01"), as.Date("2023-12-31"), by = "day"), n, replace = TRUE)
+)
+
+# Convertir a data.table
+datos_dt <- as.data.table(datos)
+```
+
+### Tarea: Calcular la media de `valor` por `categoria`
+
+::: {.panel-tabset}
+
+## **R Base**
+```{r}
+#| label: rbase-ejemplo
+#| echo: true
+#| eval: true
+
+# R base: verbose y lento
+resultado_base <- aggregate(valor ~ categoria, data = datos, FUN = mean)
+head(resultado_base)
+```
+
+## **dplyr**
+```{r}
+#| label: dplyr-ejemplo
+#| echo: true
+#| eval: true
+
+# dplyr: legible pero más lento para datos grandes
+resultado_dplyr <- datos %>%
+  group_by(categoria) %>%
+  summarise(media_valor = mean(valor), .groups = 'drop')
+
+head(resultado_dplyr)
+```
+
+## **data.table**
+```{r}
+#| label: datatable-ejemplo
+#| echo: true
+#| eval: true
+
+# data.table: conciso y ultra rápido
+resultado_dt <- datos_dt[, .(media_valor = mean(valor)), by = categoria]
+head(resultado_dt)
+```
+
+:::
+
+### Comparación de Rendimiento
+
+```{r}
+#| label: benchmark-comparacion
+#| echo: true
+#| cache: true
+
+# Comparamos velocidad (solo con muestra para el ejemplo)
+if(nrow(datos) > 10000) {
+  muestra <- slice_sample(datos, n = 10000)
+  muestra_dt <- as.data.table(muestra)
+  
+  benchmark_resultado <- microbenchmark(
+    "R Base" = aggregate(valor ~ categoria, data = muestra, FUN = mean),
+    "dplyr" = muestra %>% group_by(categoria) %>% summarise(media = mean(valor), .groups = 'drop'),
+    "data.table" = muestra_dt[, .(media = mean(valor)), by = categoria],
+    times = 50
+  )
+  
+  print(benchmark_resultado)
+}
+```
+
+::: {.callout-note}
+## 📊 Interpretando los Resultados
+
+En datasets grandes (millones de filas), `data.table` puede ser **10-100x más rápido** que R base y **2-10x más rápido** que `dplyr`. La diferencia se amplifica con operaciones más complejas.
+:::
+
+## Tu Primer `data.table`
+
+### Creación Básica
+
+Existen varias formas de crear un `data.table`:
+
+```{r}
+#| label: creacion-basica
+#| echo: true
+
+# 1. Desde cero
+mi_dt <- data.table(
+  nombre = c("Ana", "Juan", "María", "Carlos"),
+  edad = c(25, 30, 28, 35),
+  ciudad = c("Madrid", "Barcelona", "Sevilla", "Valencia"),
+  salario = c(35000, 42000, 38000, 50000)
+)
+
+print(mi_dt)
+```
+
+```{r}
+#| label: conversion-dataframe
+#| echo: true
+
+# 2. Convirtiendo un data.frame existente
+iris_dt <- as.data.table(iris)
+print(head(iris_dt))
+```
+
+```{r}
+#| label: lectura-archivo
+#| echo: true
+#| eval: false
+
+# 3. Leyendo un archivo (súper rápido)
+datos_csv <- fread("mi_archivo.csv")
+```
+
+### Explorando tu `data.table`
+
+```{r}
+#| label: exploracion-basica
+#| echo: true
+
+# Información básica
+dim(iris_dt)         # Dimensiones
+names(iris_dt)       # Nombres de columnas
+str(iris_dt)         # Estructura
+```
+
+```{r}
+#| label: exploracion-avanzada
+#| echo: true
+
+# Estadísticas rápidas por grupo
+iris_dt[, .N, by = Species]  # Conteo por especie
+```
+
+## Configuración del Entorno
+
+Para aprovechar al máximo `data.table`, configuremos nuestro entorno:
+
+```{r}
+#| label: configuracion-entorno
+#| echo: true
+
+# 1. Configurar número de threads (para aprovechar múltiples núcleos)
+setDTthreads(0)  # 0 = usar todos los núcleos disponibles
+getDTthreads()   # Verificar configuración
+
+# 2. Opciones de visualización
+options(datatable.print.nrows = 10)     # Mostrar 10 filas
+options(datatable.print.class = TRUE)   # Mostrar clases de columnas
+
+# 3. Modo verboso para aprendizaje (opcional)
+# options(datatable.verbose = TRUE)  # Descomenta para debug
+```
+
+::: {.callout-tip}
+## 🚀 Consejo de Performance
+
+`setDTthreads(0)` utiliza todos los núcleos de CPU disponibles. En máquinas con muchos núcleos, esto puede acelerar operaciones hasta 4-8x. Para laptops o uso interactivo, considera `setDTthreads(2)` para mantener el sistema responsive.
+:::
+
+## Anatomía de la Sintaxis `DT[i, j, by]`
+
+La sintaxis de `data.table` puede parecer intimidante al principio, pero es increíblemente lógica:
+
+```{r}
+#| label: anatomia-sintaxis
+#| echo: true
+
+# Ejemplo con nuestros datos de empleados
+print(mi_dt)
+
+# i: ¿QUÉ FILAS? (filtrado)
+mi_dt[edad > 28]
+
+# j: ¿QUÉ HACER? (selección/cálculo)
+mi_dt[, .(nombre, salario)]
+
+# by: ¿AGRUPADO POR QUÉ? (agrupación)
+mi_dt[, mean(salario), by = ciudad]
+```
+
+## Ejercicio Práctico: Tu Primera Experiencia
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 1: Explorando los datos de iris
+
+Usando el `data.table` `iris_dt` que creamos:
+
+1. **Filtra** las filas donde `Sepal.Length > 6.0`
+2. **Calcula** la media de `Petal.Width` para cada `Species`
+3. **Selecciona** solo las columnas que empiecen con "Petal"
+
+¡Intenta resolver cada parte antes de ver la solución!
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 1
+
+```{r}
+#| label: solucion-ejercicio-1
+#| echo: true
+
+# 1. Filtrar filas
+iris_grandes <- iris_dt[Sepal.Length > 6.0]
+print(nrow(iris_grandes))
+
+# 2. Media de Petal.Width por Species
+medias_petal <- iris_dt[, .(media_petal_width = mean(Petal.Width)), by = Species]
+print(medias_petal)
+
+# 3. Seleccionar columnas que empiecen con "Petal"
+columnas_petal <- iris_dt[, .SD, .SDcols = patterns("^Petal")]
+print(head(columnas_petal))
+```
+
+**Explicación:**
+- `[Sepal.Length > 6.0]` filtra filas por condición lógica
+- `.(media_petal_width = mean(Petal.Width))` crea una nueva columna calculada
+- `patterns("^Petal")` usa regex para seleccionar columnas dinámicamente
+:::
+
+## Próximos Pasos
+
+Has dado tus primeros pasos en el mundo de `data.table`. En el siguiente capítulo profundizaremos en cada componente de la sintaxis `DT[i, j, by]` y descubrirás el verdadero poder de esta herramienta.
+
+### Lo que viene
+
+En el **Capítulo 1** exploraremos:
+- Filtrado avanzado de filas (`i`)
+- Selección y transformación de columnas (`j`)
+- Agrupaciones poderosas (`by`)
+- Símbolos especiales como `.N`, `.SD`, etc.
+
+---
+
+::: {.callout-important}
+## 🎯 Recuerda
+
+`data.table` no es solo una herramienta más rápida - es una **forma diferente de pensar** sobre la manipulación de datos. La inversión inicial en aprender su sintaxis te pagará dividendos durante toda tu carrera como analista de datos.
+:::

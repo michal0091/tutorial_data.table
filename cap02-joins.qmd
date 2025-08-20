@@ -1,0 +1,819 @@
+# Uniones de Datos (Joins)
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **Joins básicos** con `merge()` y sintaxis SQL-style
+- **Joins optimizados** con `setkey()` y sintaxis `X[Y]`
+- **Sintaxis `on`** para joins flexibles sin keys
+- **Update joins** con el operador `:=`
+- **Joins múltiples** y encadenamiento de uniones
+- **Comparación de performance** entre métodos
+:::
+
+```{r}
+#| label: setup-cap02-joins
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(DT)
+library(microbenchmark)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets relacionales para joins
+set.seed(2024)
+
+# Tabla principal: empleados
+empleados <- data.table(
+  emp_id = 1:15,
+  nombre = paste0("Empleado_", LETTERS[1:15]),
+  departamento_id = sample(1:5, 15, replace = TRUE),
+  manager_id = c(NA, 1, 1, NA, 4, 4, 6, 7, 8, NA, 10, 11, 4, 13, 14),
+  salario = round(runif(15, 35000, 75000), -2),
+  fecha_contratacion = sample(seq(as.Date("2020-01-01"), as.Date("2024-01-01"), by = "month"), 15, replace = TRUE),
+  nivel = sample(c("Junior", "Senior", "Lead", "Manager"), 15, replace = TRUE, prob = c(0.4, 0.3, 0.2, 0.1)),
+  activo = sample(c(TRUE, FALSE), 15, replace = TRUE, prob = c(0.9, 0.1))
+)
+
+# Tabla de departamentos
+departamentos <- data.table(
+  dept_id = 1:5,
+  nombre_dept = c("Ingeniería", "Ventas", "Marketing", "RRHH", "Finanzas"),
+  presupuesto = c(800000, 600000, 400000, 300000, 500000),
+  ubicacion = c("Madrid", "Barcelona", "Sevilla", "Valencia", "Bilbao"),
+  fecha_creacion = c("2015-01-01", "2016-06-01", "2017-03-01", "2018-09-01", "2019-02-01"),
+  director_id = c(4, 7, 10, 13, 14)
+)
+departamentos[, fecha_creacion := as.Date(fecha_creacion)]
+
+# Tabla de proyectos
+proyectos <- data.table(
+  proyecto_id = 1:12,
+  nombre_proyecto = paste0("Proyecto_", LETTERS[1:12]),
+  departamento_id = sample(1:5, 12, replace = TRUE),
+  presupuesto_proyecto = round(runif(12, 50000, 300000), -3),
+  fecha_inicio = sample(seq(as.Date("2023-01-01"), as.Date("2024-06-01"), by = "month"), 12, replace = TRUE),
+  estado = sample(c("Planificación", "En Curso", "Completado", "Pausado"), 12, replace = TRUE),
+  responsable_id = sample(1:15, 12, replace = TRUE)
+)
+
+# Tabla de asignaciones empleado-proyecto (muchos a muchos)
+asignaciones <- data.table(
+  asignacion_id = 1:25,
+  empleado_id = sample(1:15, 25, replace = TRUE),
+  proyecto_id = sample(1:12, 25, replace = TRUE),
+  horas_asignadas = sample(10:40, 25, replace = TRUE),
+  fecha_asignacion = sample(seq(as.Date("2023-06-01"), as.Date("2024-03-01"), by = "week"), 25, replace = TRUE),
+  rol_proyecto = sample(c("Desarrollador", "Analista", "Tester", "Líder"), 25, replace = TRUE)
+)
+
+# Remover duplicados en asignaciones
+asignaciones <- unique(asignaciones, by = c("empleado_id", "proyecto_id"))
+
+# Tabla de evaluaciones (puede tener empleados sin evaluación)
+evaluaciones <- data.table(
+  evaluacion_id = 1:12,
+  empleado_id = sample(1:15, 12, replace = TRUE),  # No todos los empleados
+  fecha_evaluacion = sample(seq(as.Date("2023-12-01"), as.Date("2024-02-28"), by = "week"), 12, replace = TRUE),
+  puntuacion = round(runif(12, 3, 5), 1),
+  comentarios = paste0("Evaluación_", 1:12),
+  evaluador_id = sample(c(4, 7, 10, 13, 14), 12, replace = TRUE)  # Solo managers
+)
+
+# Dataset grande para benchmarks
+set.seed(456)
+transacciones_grandes <- data.table(
+  trans_id = 1:50000,
+  cliente_id = sample(1:1000, 50000, replace = TRUE),
+  producto_id = sample(1:500, 50000, replace = TRUE),
+  vendedor_id = sample(1:100, 50000, replace = TRUE),
+  monto = round(runif(50000, 10, 1000), 2),
+  fecha = sample(seq(as.Date("2023-01-01"), as.Date("2024-12-31"), by = "day"), 50000, replace = TRUE)
+)
+
+clientes_info <- data.table(
+  cliente_id = 1:1000,
+  nombre_cliente = paste0("Cliente_", 1:1000),
+  segmento = sample(c("Premium", "Estándar", "Básico"), 1000, replace = TRUE, prob = c(0.1, 0.6, 0.3)),
+  región = sample(c("Norte", "Sur", "Este", "Oeste"), 1000, replace = TRUE),
+  fecha_registro = sample(seq(as.Date("2022-01-01"), as.Date("2024-01-01"), by = "day"), 1000, replace = TRUE)
+)
+```
+
+## Fundamentos de Joins en data.table
+
+`data.table` ofrece múltiples métodos para realizar joins, cada uno optimizado para diferentes casos de uso. La elección del método correcto puede marcar la diferencia entre segundos y minutos en datasets grandes.
+
+### 1. **Tipos de Joins: Conceptos Básicos**
+
+```{r}
+#| label: conceptos-joins
+#| echo: true
+
+# Mostrar las tablas base
+cat("=== EMPLEADOS ===\n")
+print(empleados[1:5, .(emp_id, nombre, departamento_id, salario)])
+
+cat("\n=== DEPARTAMENTOS ===\n") 
+print(departamentos[, .(dept_id, nombre_dept, ubicacion)])
+
+cat("\n=== EVALUACIONES (parcial) ===\n")
+print(evaluaciones[1:5, .(empleado_id, puntuacion, fecha_evaluacion)])
+```
+
+## Joins con `merge()`: El Método Tradicional
+
+La función `merge()` es familiar para usuarios de R base y ofrece una sintaxis clara para joins simples.
+
+### 1. **Inner Join Básico**
+
+```{r}
+#| label: merge-inner-join
+#| echo: true
+
+# Inner join: solo registros que existen en ambas tablas
+empleados_con_dept <- merge(empleados, departamentos, 
+                           by.x = "departamento_id", by.y = "dept_id")
+
+cat("Empleados con información de departamento (Inner Join):\n")
+print(empleados_con_dept[1:6, .(nombre, nombre_dept, salario, ubicacion)])
+```
+
+### 2. **Todos los Tipos de Joins con merge()**
+
+```{r}
+#| label: merge-tipos-joins
+#| echo: true
+
+# Comparar diferentes tipos de joins
+inner_join <- merge(empleados, evaluaciones, 
+                   by.x = "emp_id", by.y = "empleado_id")
+cat("Inner join (empleados con evaluación):", nrow(inner_join), "filas\n")
+
+left_join <- merge(empleados, evaluaciones, 
+                  by.x = "emp_id", by.y = "empleado_id", all.x = TRUE)
+cat("Left join (todos los empleados):", nrow(left_join), "filas\n")
+
+right_join <- merge(empleados, evaluaciones, 
+                   by.x = "emp_id", by.y = "empleado_id", all.y = TRUE)
+cat("Right join (todas las evaluaciones):", nrow(right_join), "filas\n")
+
+full_join <- merge(empleados, evaluaciones, 
+                  by.x = "emp_id", by.y = "empleado_id", all = TRUE)
+cat("Full join (empleados + evaluaciones):", nrow(full_join), "filas\n")
+
+# Mostrar ejemplo de left join
+print(left_join[1:8, .(nombre, nivel, puntuacion, fecha_evaluacion)])
+```
+
+### 3. **Joins por Múltiples Columnas**
+
+```{r}
+#| label: merge-multiples-columnas
+#| echo: true
+
+# Crear tabla de ejemplo con múltiples keys
+historico_salarios <- data.table(
+  empleado_id = rep(c(1, 2, 3), each = 2),
+  departamento_id = rep(c(1, 2, 1), each = 2),
+  año = rep(c(2023, 2024), times = 3),
+  salario_historico = c(40000, 42000, 45000, 47000, 38000, 40000)
+)
+
+# Join por múltiples columnas
+join_multiple <- merge(empleados[1:3, .(emp_id, nombre, departamento_id)], 
+                      historico_salarios, 
+                      by.x = c("emp_id", "departamento_id"), 
+                      by.y = c("empleado_id", "departamento_id"))
+
+print(join_multiple)
+```
+
+## Joins Optimizados con `setkey()`
+
+Para datasets grandes y joins repetitivos, establecer keys proporciona un rendimiento excepcional.
+
+### 1. **Estableciendo Keys y Sintaxis `X[Y]`**
+
+```{r}
+#| label: setkey-joins
+#| echo: true
+
+# Hacer copias para no modificar originales
+emp_key <- copy(empleados)
+dept_key <- copy(departamentos)
+
+# Establecer keys (ordena físicamente las tablas)
+setkey(emp_key, departamento_id)
+setkey(dept_key, dept_id)
+
+# Verificar que las keys están establecidas
+cat("Key de empleados:", key(emp_key), "\n")
+cat("Key de departamentos:", key(dept_key), "\n")
+
+# Join ultra-rápido con sintaxis X[Y]
+resultado_key_join <- dept_key[emp_key]
+
+print(resultado_key_join[1:6, .(nombre, nombre_dept, salario, presupuesto)])
+```
+
+### 2. **Ventajas de las Keys**
+
+```{r}
+#| label: ventajas-keys
+#| echo: true
+
+# Las tablas con key están ordenadas físicamente
+cat("Empleados ordenados por departamento_id:\n")
+print(emp_key[, .(emp_id, nombre, departamento_id)])
+
+cat("\nDepartamentos ordenados por dept_id:\n") 
+print(dept_key[, .(dept_id, nombre_dept)])
+
+# Acceso ultra-rápido por key
+departamento_2 <- dept_key[2]  # Busca dept_id == 2
+empleados_dept_2 <- emp_key[2]  # Busca departamento_id == 2
+
+cat("\nEmpleados del departamento 2:\n")
+print(empleados_dept_2[, .(nombre, nivel, salario)])
+```
+
+### 3. **Múltiples Keys**
+
+```{r}
+#| label: multiple-keys
+#| echo: true
+
+# Establecer múltiples columnas como key
+setkey(asignaciones, empleado_id, proyecto_id)
+
+# Buscar por key compuesta
+asignacion_especifica <- asignaciones[.(1, 2)]  # empleado 1, proyecto 2
+print(asignacion_especifica)
+
+# Búsquedas parciales
+asignaciones_emp_1 <- asignaciones[.(1)]  # Solo empleado 1
+cat("Asignaciones del empleado 1:", nrow(asignaciones_emp_1), "proyectos\n")
+```
+
+## Sintaxis `on`: Joins Flexibles sin Keys
+
+La sintaxis `on` permite joins puntuales sin necesidad de establecer keys.
+
+### 1. **Join Básico con `on`**
+
+```{r}
+#| label: on-syntax-basico
+#| echo: true
+
+# Join sin modificar las tablas originales
+resultado_on <- empleados[departamentos, on = .(departamento_id = dept_id)]
+
+print(resultado_on[1:6, .(nombre, nombre_dept, salario, ubicacion)])
+```
+
+### 2. **Join con Renombrado de Columnas**
+
+```{r}
+#| label: on-syntax-renombrado
+#| echo: true
+
+# Join con selección y renombrado
+empleados_completo <- empleados[
+  departamentos, 
+  on = .(departamento_id = dept_id)
+][
+  , .(
+    empleado = nombre,
+    departamento = nombre_dept, 
+    salario,
+    presupuesto_dept = presupuesto,
+    ubicacion,
+    ratio_salario_presupuesto = round(salario / presupuesto * 100, 3)
+  )
+]
+
+print(empleados_completo[order(-ratio_salario_presupuesto)][1:6])
+```
+
+### 3. **Joins con Condiciones Adicionales**
+
+```{r}
+#| label: on-syntax-condiciones
+#| echo: true
+
+# Join con filtro simultáneo
+empleados_evaluados_reciente <- empleados[
+  evaluaciones[fecha_evaluacion >= "2024-01-01"], 
+  on = .(emp_id = empleado_id)
+][
+  !is.na(puntuacion)  # Solo empleados con evaluación
+][
+  , .(nombre, nivel, puntuacion, fecha_evaluacion)
+][
+  order(-puntuacion)
+]
+
+print(empleados_evaluados_reciente)
+```
+
+## Update Joins: La Característica Estrella
+
+Los update joins permiten modificar una tabla basándose en valores de otra tabla de forma eficiente.
+
+### 1. **Update Join Básico**
+
+```{r}
+#| label: update-join-basico
+#| echo: true
+
+# Crear tabla de bonos
+bonos_dept <- data.table(
+  dept_id = 1:5,
+  bono_porcentaje = c(0.15, 0.20, 0.12, 0.18, 0.16),
+  bono_fijo = c(5000, 7000, 4000, 6000, 5500)
+)
+
+# Hacer copia para update join
+emp_con_bonus <- copy(empleados)
+
+# Update join: agregar columnas basadas en departamento
+emp_con_bonus[bonos_dept, on = .(departamento_id = dept_id), 
+              `:=`(
+                bono_porcentaje = i.bono_porcentaje,
+                bono_calculado = salario * i.bono_porcentaje + i.bono_fijo
+              )]
+
+print(emp_con_bonus[1:6, .(nombre, departamento_id, salario, bono_porcentaje, bono_calculado)])
+```
+
+### 2. **Update Join Condicional**
+
+```{r}
+#| label: update-join-condicional
+#| echo: true
+
+# Update join solo para ciertos empleados
+emp_con_bonus[bonos_dept, on = .(departamento_id = dept_id), 
+              bono_extra := ifelse(i.bono_porcentaje > 0.15 & salario > 50000, 
+                                  2000, 0)]
+
+print(emp_con_bonus[bono_extra > 0, .(nombre, departamento_id, salario, bono_extra)])
+```
+
+### 3. **Update Join con Agregaciones**
+
+```{r}
+#| label: update-join-agregaciones
+#| echo: true
+
+# Calcular estadísticas por departamento
+stats_dept <- empleados[, .(
+  empleados_count = .N,
+  salario_promedio_dept = round(mean(salario), 0),
+  salario_max_dept = max(salario)
+), by = departamento_id]
+
+# Update join con estadísticas
+emp_con_bonus[stats_dept, on = .(departamento_id), 
+              `:=`(
+                empleados_en_dept = i.empleados_count,
+                percentil_en_dept = round(salario / i.salario_max_dept * 100, 1),
+                vs_promedio_dept = salario - i.salario_promedio_dept
+              )]
+
+print(emp_con_bonus[1:8, .(nombre, departamento_id, salario, empleados_en_dept, 
+                           percentil_en_dept, vs_promedio_dept)])
+```
+
+## Joins Múltiples y Encadenamiento
+
+Combinando múltiples tablas en operaciones complejas.
+
+### 1. **Joins Encadenados**
+
+```{r}
+#| label: joins-encadenados
+#| echo: true
+
+# Pipeline complejo: empleados -> departamentos -> proyectos -> evaluaciones
+analisis_completo <- empleados[
+  departamentos, on = .(departamento_id = dept_id)        # Join 1: empleados + departamentos
+][
+  asignaciones, on = .(emp_id = empleado_id), allow.cartesian = TRUE  # Join 2: + asignaciones
+][
+  proyectos, on = .(proyecto_id), allow.cartesian = TRUE   # Join 3: + proyectos  
+][
+  evaluaciones, on = .(emp_id = empleado_id)               # Join 4: + evaluaciones
+][
+  !is.na(puntuacion)                                       # Solo empleados evaluados
+][
+  , .(
+    empleado = nombre,
+    departamento = nombre_dept,
+    proyecto = nombre_proyecto,
+    horas_asignadas,
+    rol_proyecto,
+    puntuacion,
+    salario,
+    presupuesto_proyecto
+  )
+][
+  order(empleado, proyecto)
+]
+
+print(head(analisis_completo, 10))
+```
+
+### 2. **Agregaciones Complejas con Múltiples Joins**
+
+```{r}
+#| label: agregaciones-complejas
+#| echo: true
+
+# Análisis de productividad por departamento
+productividad_dept <- empleados[
+  asignaciones, on = .(emp_id = empleado_id), allow.cartesian = TRUE
+][
+  proyectos, on = .(proyecto_id)
+][
+  departamentos, on = .(departamento_id = dept_id)
+][
+  , .(
+    empleados_únicos = uniqueN(emp_id),
+    proyectos_únicos = uniqueN(proyecto_id),
+    horas_totales = sum(horas_asignadas),
+    presupuesto_total = sum(presupuesto_proyecto),
+    proyectos_completados = sum(estado == "Completado")
+  ), by = .(departamento_id, nombre_dept)
+][
+  , `:=`(
+    horas_por_empleado = round(horas_totales / empleados_únicos, 1),
+    proyectos_por_empleado = round(proyectos_únicos / empleados_únicos, 2),
+    tasa_completación = round(proyectos_completados / proyectos_únicos * 100, 1)
+  )
+][
+  order(-tasa_completación)
+]
+
+print(productividad_dept)
+```
+
+## Casos Especiales: Joins con Diferentes Estructuras
+
+### 1. **Self-Joins: Jerarquías**
+
+```{r}
+#| label: self-joins
+#| echo: true
+
+# Self-join para obtener información de managers
+empleados_con_manager <- empleados[
+  empleados[, .(manager_emp_id = emp_id, manager_nombre = nombre, manager_nivel = nivel)], 
+  on = .(manager_id = manager_emp_id)
+][
+  , .(empleado = nombre, nivel, salario, 
+      manager = manager_nombre, manager_nivel)
+][
+  !is.na(manager)  # Solo empleados con manager
+][
+  order(manager, empleado)
+]
+
+print(empleados_con_manager)
+```
+
+### 2. **Many-to-Many Joins**
+
+```{r}
+#| label: many-to-many-joins
+#| echo: true
+
+# Análisis de empleados en múltiples proyectos
+empleados_multiproyecto <- asignaciones[, .N, by = empleado_id][N > 1]
+
+detalle_multiproyecto <- empleados[empleados_multiproyecto, on = .(emp_id = empleado_id)][
+  asignaciones, on = .(emp_id = empleado_id), allow.cartesian = TRUE
+][
+  proyectos, on = .(proyecto_id)
+][
+  , .(
+    empleado = nombre,
+    nivel,
+    proyecto = nombre_proyecto,
+    horas_asignadas,
+    rol_proyecto,
+    estado_proyecto = estado
+  )
+][
+  order(empleado, proyecto)
+]
+
+print(head(detalle_multiproyecto, 12))
+
+# Resumen por empleado
+resumen_multiproyecto <- detalle_multiproyecto[, .(
+  proyectos_total = .N,
+  horas_totales = sum(horas_asignadas),
+  roles_únicos = uniqueN(rol_proyecto),
+  proyectos_completados = sum(estado_proyecto == "Completado")
+), by = .(empleado, nivel)][
+  order(-horas_totales)
+]
+
+print(resumen_multiproyecto)
+```
+
+## Comparación de Performance entre Métodos
+
+```{r}
+#| label: benchmark-joins-metodos
+#| echo: true
+#| cache: true
+
+# Preparar datasets para benchmark
+clientes_sample <- clientes_info[sample(.N, 500)]
+trans_sample <- transacciones_grandes[sample(.N, 25000)]
+
+# Copias para diferentes métodos
+clientes_key <- copy(clientes_sample)
+trans_key <- copy(trans_sample)
+setkey(clientes_key, cliente_id)
+setkey(trans_key, cliente_id)
+
+# Benchmark de diferentes métodos
+benchmark_joins <- microbenchmark(
+  "merge()" = merge(trans_sample, clientes_sample, by = "cliente_id"),
+  "X[Y, on=]" = trans_sample[clientes_sample, on = .(cliente_id)],
+  "setkey + X[Y]" = clientes_key[trans_key],
+  times = 10
+)
+
+print(benchmark_joins)
+
+# Mostrar eficiencia relativa
+benchmark_summary <- as.data.table(summary(benchmark_joins))
+print(benchmark_summary[, .(expr, median, relative_speed = round(median / min(median), 2))])
+```
+
+## Ejercicios Prácticos
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 8: Pipeline de Joins Complejo
+
+Usando las tablas disponibles, crea un análisis que:
+
+1. **Una** empleados con sus departamentos y evaluaciones
+2. **Filtre** solo empleados con evaluación > 4.0
+3. **Agregue** información de proyectos asignados
+4. **Calcule** métricas de productividad por departamento
+5. **Genere** un ranking de departamentos por performance
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 8
+
+```{r}
+#| label: solucion-ejercicio-8
+#| echo: true
+
+# Pipeline completo de joins y análisis
+ranking_departamentos <- empleados[
+  evaluaciones[puntuacion > 4.0], on = .(emp_id = empleado_id)  # 1. Join + filtro
+][
+  departamentos, on = .(departamento_id = dept_id)              # 2. Agregar info departamental
+][
+  asignaciones, on = .(emp_id = empleado_id), allow.cartesian = TRUE  # 3. Proyectos asignados
+][
+  proyectos, on = .(proyecto_id)                                # 4. Info de proyectos
+][
+  , .(                                                          # 5. Métricas por departamento
+    empleados_alto_performance = uniqueN(emp_id),
+    puntuacion_promedio = round(mean(puntuacion), 2),
+    salario_promedio = round(mean(salario), 0),
+    horas_totales_asignadas = sum(horas_asignadas),
+    proyectos_gestionados = uniqueN(proyecto_id),
+    presupuesto_total_proyectos = sum(presupuesto_proyecto),
+    proyectos_completados = sum(estado == "Completado"),
+    presupuesto_departamental = first(presupuesto)
+  ), by = .(departamento_id, nombre_dept, ubicacion)
+][
+  , `:=`(                                                      # 6. Cálculos de productividad
+    horas_por_empleado = round(horas_totales_asignadas / empleados_alto_performance, 1),
+    proyectos_por_empleado = round(proyectos_gestionados / empleados_alto_performance, 2),
+    tasa_completación = round(proyectos_completados / proyectos_gestionados * 100, 1),
+    eficiencia_presupuestal = round((proyectos_completados * presupuesto_total_proyectos) / presupuesto_departamental, 2)
+  )
+][
+  , score_performance := round(                                # 7. Score compuesto
+    (puntuacion_promedio * 20) + 
+    (tasa_completación * 0.5) + 
+    (eficiencia_presupuestal * 10), 1
+  )
+][
+  order(-score_performance)                                    # 8. Ranking final
+][
+  , ranking := 1:.N
+]
+
+print(ranking_departamentos[, .(
+  ranking, nombre_dept, ubicacion, empleados_alto_performance,
+  puntuacion_promedio, tasa_completación, eficiencia_presupuestal, score_performance
+)])
+
+# Crear visualización del ranking
+cat("\n🏆 RANKING DE DEPARTAMENTOS POR PERFORMANCE:\n")
+for(i in 1:nrow(ranking_departamentos)) {
+  dept <- ranking_departamentos[i]
+  medal <- ifelse(i == 1, "🥇", ifelse(i == 2, "🥈", ifelse(i == 3, "🥉", paste0("#", i))))
+  cat(sprintf("%s %s (%s) - Score: %.1f\n", medal, dept$nombre_dept, dept$ubicacion, dept$score_performance))
+  cat(sprintf("   • %d empleados alto performance, %.1f%% completación\n", 
+              dept$empleados_alto_performance, dept$tasa_completación))
+}
+```
+:::
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 9: Update Joins Avanzados
+
+1. **Crea** una tabla de ajustes salariales por departamento
+2. **Usa update joins** para aplicar los ajustes
+3. **Calcula** el impacto presupuestal por departamento
+4. **Identifica** empleados que necesitan reclasificación de nivel
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 9
+
+```{r}
+#| label: solucion-ejercicio-9
+#| echo: true
+
+# 1. Crear tabla de ajustes salariales
+ajustes_salariales <- data.table(
+  dept_id = 1:5,
+  nombre_dept = c("Ingeniería", "Ventas", "Marketing", "RRHH", "Finanzas"),
+  ajuste_porcentaje = c(0.08, 0.12, 0.06, 0.10, 0.07),  # 8%, 12%, 6%, 10%, 7%
+  bono_retencion = c(3000, 5000, 2000, 2500, 4000),
+  criterio_nivel = c(65000, 55000, 45000, 50000, 60000)  # Umbral para nivel Senior+
+)
+
+print("Ajustes salariales por departamento:")
+print(ajustes_salariales)
+
+# 2. Aplicar ajustes usando update joins
+empleados_ajuste <- copy(empleados)
+
+# Update join principal
+empleados_ajuste[ajustes_salariales, on = .(departamento_id = dept_id),
+                 `:=`(
+                   salario_anterior = salario,
+                   ajuste_pct = i.ajuste_porcentaje,
+                   salario_ajustado = salario * (1 + i.ajuste_porcentaje),
+                   bono_retencion = i.bono_retencion,
+                   umbral_senior = i.criterio_nivel
+                 )]
+
+# Update join condicional para bonos extra
+empleados_ajuste[nivel %in% c("Lead", "Manager") & salario_ajustado > 60000, 
+                 bono_extra := salario_ajustado * 0.05]
+empleados_ajuste[is.na(bono_extra), bono_extra := 0]
+
+# 3. Calcular impacto presupuestal
+impacto_presupuestal <- empleados_ajuste[
+  departamentos, on = .(departamento_id = dept_id)
+][
+  , .(
+    empleados = .N,
+    salario_total_anterior = sum(salario_anterior),
+    salario_total_nuevo = sum(salario_ajustado),
+    bonos_retencion = sum(bono_retencion),
+    bonos_extra = sum(bono_extra),
+    presupuesto_dept = first(presupuesto)
+  ), by = .(departamento_id, nombre_dept)
+][
+  , `:=`(
+    incremento_salarial = salario_total_nuevo - salario_total_anterior,
+    costo_total_ajuste = (salario_total_nuevo - salario_total_anterior) + bonos_retencion + bonos_extra,
+    impacto_presupuestal_pct = round(((salario_total_nuevo - salario_total_anterior) + bonos_retencion + bonos_extra) / presupuesto_dept * 100, 2)
+  )
+][
+  order(-costo_total_ajuste)
+]
+
+print("\n3. Impacto presupuestal por departamento:")
+print(impacto_presupuestal[, .(nombre_dept, empleados, incremento_salarial, 
+                               costo_total_ajuste, impacto_presupuestal_pct)])
+
+# 4. Identificar empleados para reclasificación
+reclasificacion <- empleados_ajuste[, .(
+  nombre,
+  departamento_id,
+  nivel_actual = nivel,
+  salario_ajustado,
+  umbral_senior,
+  necesita_reclasificacion = salario_ajustado >= umbral_senior & nivel == "Junior"
+)][necesita_reclasificacion == TRUE]
+
+if(nrow(reclasificacion) > 0) {
+  cat("\n4. Empleados que necesitan reclasificación:\n")
+  print(reclasificacion[, .(nombre, nivel_actual, salario_ajustado, umbral_senior)])
+} else {
+  cat("\n4. No hay empleados que requieran reclasificación inmediata.\n")
+}
+
+# Resumen ejecutivo
+cat("\n📊 RESUMEN EJECUTIVO DEL AJUSTE SALARIAL:\n")
+cat(sprintf("• Total empleados afectados: %d\n", nrow(empleados_ajuste)))
+cat(sprintf("• Incremento salarial total: $%s\n", 
+            format(sum(impacto_presupuestal$incremento_salarial), big.mark = ",")))
+cat(sprintf("• Costo total del ajuste: $%s\n", 
+            format(sum(impacto_presupuestal$costo_total_ajuste), big.mark = ",")))
+cat(sprintf("• Departamento más impactado: %s (%.2f%% del presupuesto)\n",
+            impacto_presupuestal[1, nombre_dept], impacto_presupuestal[1, impacto_presupuestal_pct]))
+```
+:::
+
+## Mejores Prácticas para Joins
+
+### 1. **Elección del Método Adecuado**
+
+```{r}
+#| label: mejores-practicas-metodos
+#| echo: true
+#| eval: false
+
+# ✅ Para joins únicos: usar "on ="
+resultado <- tabla1[tabla2, on = .(key)]
+
+# ✅ Para joins repetitivos en datos grandes: usar setkey
+setkey(tabla1, key)
+setkey(tabla2, key)
+resultado <- tabla2[tabla1]
+
+# ✅ Para análisis exploratorio: usar merge()
+resultado <- merge(tabla1, tabla2, by = "key")
+
+# ✅ Para modificar tabla existente: usar update join
+tabla1[tabla2, on = .(key), nueva_col := i.columna]
+```
+
+### 2. **Gestión de Memoria en Joins**
+
+```{r}
+#| label: mejores-practicas-memoria
+#| echo: true
+#| eval: false
+
+# ✅ HACER: Filtrar antes de join
+tabla_pequeña <- tabla_grande[filtro_importante]
+resultado <- tabla_pequeña[otra_tabla, on = .(key)]
+
+# ❌ EVITAR: Join primero, filtrar después
+resultado <- tabla_grande[otra_tabla, on = .(key)][filtro_importante]
+
+# ✅ HACER: Usar .SDcols para limitar columnas en joins complejos
+resultado <- tabla1[tabla2, on = .(key), .SDcols = columnas_necesarias]
+```
+
+### 3. **Troubleshooting de Joins**
+
+```{r}
+#| label: troubleshooting-joins
+#| echo: true
+#| eval: false
+
+# Diagnosticar problemas de joins
+cat("Claves duplicadas en tabla1:", anyDuplicated(tabla1, by = "key"), "\n")
+cat("Claves faltantes:", sum(is.na(tabla1$key)), "\n")
+cat("Rango de keys:", range(tabla1$key, na.rm = TRUE), "\n")
+
+# Verificar resultado de join
+cat("Filas antes del join:", nrow(tabla1), "\n")
+cat("Filas después del join:", nrow(resultado), "\n")
+cat("Columnas agregadas:", ncol(resultado) - ncol(tabla1), "\n")
+```
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **`merge()`** es intuitivo para joins simples, `setkey()` es óptimo para datos grandes
+2. **Sintaxis `on`** ofrece flexibilidad sin modificar las tablas originales
+3. **Update joins** con `:=` permiten modificar tablas de forma eficiente
+4. **La elección del método** depende del tamaño de datos y frecuencia de uso
+5. **Filtrar antes de join** mejora significativamente el rendimiento
+6. **Always verify** el resultado de joins complejos para evitar cartesian products
+:::
+
+<function_calls>
+<invoke name="TodoWrite">
+<parameter name="todos">[{"content": "Reorganizar M\u00f3dulo 1: dividir fundamentos en sintaxis y s\u00edmbolos", "status": "completed", "id": "1"}, {"content": "Crear cap01-simbolos.qmd para s\u00edmbolos especiales del M\u00f3dulo 1", "status": "completed", "id": "1-new"}, {"content": "Reorganizar M\u00f3dulo 2: dividir en encadenamiento y joins", "status": "completed", "id": "2"}, {"content": "Reorganizar M\u00f3dulo 3: dividir en joins avanzados, funciones especiales y reshape", "status": "in_progress", "id": "3"}, {"content": "Reorganizar M\u00f3dulo 4: dividir en performance y buenas pr\u00e1cticas", "status": "pending", "id": "4"}, {"content": "Reorganizar M\u00f3dulo 5: dividir en visualizaci\u00f3n y aplicaciones", "status": "pending", "id": "5"}]

@@ -1,0 +1,1064 @@
+# Buenas Prácticas y Código Idiomático {#sec-buenas-practicas}
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **Los Mandamientos de data.table**: Do's y Don'ts definitivos
+- **Patrones de código idiomático** para diferentes escenarios
+- **Debugging y troubleshooting** de código complejo
+- **Estilos de código** y convenciones de la comunidad
+- **Testing y validación** de código data.table
+:::
+
+```{r}
+#| label: setup-cap04-bp
+#| include: false
+
+library(data.table)
+library(microbenchmark)
+library(ggplot2)
+library(tictoc)
+library(knitr)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets para ejemplos
+set.seed(2024)
+
+# Dataset grande para buenas prácticas
+employees_dt <- data.table(
+  employee_id = 1:50000,
+  department = sample(c("Sales", "Engineering", "Marketing", "HR", "Finance"), 50000, replace = TRUE),
+  salary = round(runif(50000, 40000, 150000), 0),
+  hire_date = sample(seq(as.Date("2015-01-01"), as.Date("2024-12-31"), by = "day"), 50000, replace = TRUE),
+  performance_score = sample(1:5, 50000, replace = TRUE, prob = c(0.05, 0.15, 0.6, 0.15, 0.05)),
+  remote_work = sample(c(TRUE, FALSE), 50000, replace = TRUE, prob = c(0.3, 0.7)),
+  manager_id = sample(c(1:1000, NA), 50000, replace = TRUE, prob = c(rep(1/1000, 1000), 0.02))
+)
+
+# Dataset de transacciones para ejemplos
+transactions_dt <- data.table(
+  transaction_id = 1:100000,
+  customer_id = sample(1:10000, 100000, replace = TRUE),
+  product_category = sample(c("Electronics", "Clothing", "Books", "Home", "Sports"), 100000, replace = TRUE),
+  amount = round(rexp(100000, 1/50), 2),
+  transaction_date = sample(seq(as.Date("2023-01-01"), as.Date("2024-12-31"), by = "day"), 100000, replace = TRUE),
+  payment_method = sample(c("Credit", "Debit", "Cash", "Digital"), 100000, replace = TRUE),
+  store_location = sample(paste0("Store_", LETTERS[1:20]), 100000, replace = TRUE)
+)
+
+# Dataset de productos para joins
+products_dt <- data.table(
+  product_id = 1:5000,
+  product_name = paste0("Product_", 1:5000),
+  category = sample(c("Electronics", "Clothing", "Books", "Home", "Sports"), 5000, replace = TRUE),
+  cost = round(runif(5000, 10, 500), 2),
+  margin = runif(5000, 0.1, 0.5),
+  supplier_id = sample(1:200, 5000, replace = TRUE)
+)
+```
+
+## Los Mandamientos de data.table {#sec-mandamientos}
+
+### ✅ **QUÉ HACER (Do's)**
+
+#### 1. **Usa `:=` para Modificaciones Eficientes**
+
+El operador `:=` es el corazón de la eficiencia en `data.table`. Modifica por referencia sin copiar toda la tabla.
+
+```{r}
+#| label: dos-assignment-examples
+#| echo: true
+
+# ✅ CORRECTO: Modificación por referencia
+employees_dt[, annual_bonus := salary * 0.1]
+
+# ✅ CORRECTO: Múltiples columnas a la vez
+employees_dt[, `:=`(
+  salary_tier = fifelse(salary > 100000, "High", 
+                fifelse(salary > 70000, "Medium", "Low")),
+  tenure_years = as.numeric(Sys.Date() - hire_date) / 365.25
+)]
+
+# ✅ CORRECTO: Modificación condicional
+employees_dt[department == "Engineering", tech_bonus := salary * 0.05]
+
+# Mostrar resultado
+head(employees_dt[, .(employee_id, department, salary, salary_tier, annual_bonus, tech_bonus)])
+```
+
+```{r}
+#| label: dos-assignment-comparison
+#| echo: true
+
+# Comparar con método ineficiente
+employees_copy <- copy(employees_dt[1:1000])
+
+# ❌ INCORRECTO: Crear copias innecesarias
+timing_inefficient <- system.time({
+  employees_copy <- employees_copy[, .(employee_id, department, salary, 
+                                      new_column = salary * 1.1)]
+})
+
+# ✅ CORRECTO: Modificación por referencia
+employees_ref <- copy(employees_dt[1:1000])
+timing_efficient <- system.time({
+  employees_ref[, new_column := salary * 1.1]
+})
+
+cat("Método ineficiente:", round(timing_inefficient[3], 4), "segundos\n")
+cat("Método eficiente:", round(timing_efficient[3], 4), "segundos\n")
+cat("Mejora:", round(timing_inefficient[3] / timing_efficient[3], 1), "x más rápido\n")
+```
+
+#### 2. **Utiliza `setkey()` para Joins y Filtros Repetitivos**
+
+Cuando vas a hacer múltiples operaciones sobre las mismas columnas, `setkey()` paga con creces la inversión inicial.
+
+```{r}
+#| label: dos-setkey-examples
+#| echo: true
+
+# Crear copias para comparar
+trans_no_key <- copy(transactions_dt[1:10000])
+trans_with_key <- copy(transactions_dt[1:10000])
+
+# Establecer key
+setkey(trans_with_key, customer_id, transaction_date)
+
+# ✅ CORRECTO: Consultas rápidas con key
+customers_target <- c(1, 50, 100, 500, 1000)
+
+# Sin key
+time_no_key <- system.time({
+  result1 <- trans_no_key[customer_id %in% customers_target & 
+                         transaction_date >= as.Date("2024-01-01")]
+})
+
+# Con key  
+time_with_key <- system.time({
+  # Usar sintaxis de key para máxima eficiencia
+  result2 <- trans_with_key[.(customers_target, 
+                             seq(as.Date("2024-01-01"), as.Date("2024-12-31"), by = "day"))]
+})
+
+cat("Sin key:", round(time_no_key[3], 4), "segundos\n")
+cat("Con key:", round(time_with_key[3], 4), "segundos\n")
+cat("Speedup:", round(time_no_key[3] / time_with_key[3], 1), "x\n")
+```
+
+#### 3. **Aprovecha `.SD` para Operaciones Múltiples**
+
+`.SD` (Subset of Data) te permite aplicar funciones a múltiples columnas de manera elegante.
+
+```{r}
+#| label: dos-SD-examples
+#| echo: true
+
+# ✅ CORRECTO: Usar .SD para múltiples columnas
+numeric_summary <- employees_dt[, lapply(.SD, function(x) {
+  list(mean = mean(x, na.rm = TRUE),
+       median = median(x, na.rm = TRUE),
+       q95 = quantile(x, 0.95, na.rm = TRUE))
+}), .SDcols = is.numeric, by = department]
+
+print(head(numeric_summary))
+
+# ✅ CORRECTO: .SD con transformaciones complejas
+employees_standardized <- employees_dt[, c(.SD[, .(employee_id, department)], 
+                                          lapply(.SD, function(x) scale(x)[,1])), 
+                                      .SDcols = is.numeric]
+
+print(head(employees_standardized[, .(employee_id, department, salary, performance_score)]))
+```
+
+#### 4. **Usa Vectorización en Lugar de Bucles**
+
+Las operaciones vectorizadas son siempre más rápidas y más legibles.
+
+```{r}
+#| label: dos-vectorization-examples
+#| echo: true
+
+# ✅ CORRECTO: Operaciones vectorizadas
+transactions_dt[, transaction_quarter := paste0("Q", ceiling(month(transaction_date)/3), 
+                                               "_", year(transaction_date))]
+
+# ✅ CORRECTO: Condicionales vectorizadas con fifelse
+transactions_dt[, amount_category := fifelse(
+  amount > 100, "High",
+  fifelse(amount > 50, "Medium", "Low")
+)]
+
+# ✅ CORRECTO: Uso de %between% para rangos
+employees_dt[, mid_career := salary %between% c(60000, 120000)]
+
+# Mostrar resultados
+print(head(transactions_dt[, .(transaction_id, amount, amount_category, transaction_quarter)]))
+print(head(employees_dt[, .(employee_id, salary, mid_career)]))
+```
+
+#### 5. **Utiliza Encadenamiento para Operaciones Complejas**
+
+El encadenamiento `DT[...][...]` es más eficiente que variables intermedias.
+
+```{r}
+#| label: dos-chaining-examples
+#| echo: true
+
+# ✅ CORRECTO: Encadenamiento eficiente
+high_performers <- employees_dt[
+  performance_score >= 4 & tenure_years >= 2
+][
+  , .(avg_salary = mean(salary), 
+      count = .N,
+      avg_tenure = mean(tenure_years)), 
+  by = department
+][
+  order(-avg_salary)
+]
+
+print(high_performers)
+
+# ✅ CORRECTO: Encadenamiento con modificaciones
+top_departments <- transactions_dt[
+  transaction_date >= as.Date("2024-01-01")
+][
+  , total_revenue := sum(amount), by = store_location
+][
+  total_revenue > 10000
+][
+  order(-total_revenue)
+]
+
+print(head(top_departments[, .(store_location, total_revenue)]))
+```
+
+### ❌ **QUÉ NO HACER (Don'ts)**
+
+#### 1. **No Uses Bucles for con data.table**
+
+Los bucles explícitos destruyen todas las optimizaciones de `data.table`.
+
+```{r}
+#| label: donts-loops-comparison
+#| echo: true
+
+# Crear dataset pequeño para la demostración
+sample_trans <- transactions_dt[sample(.N, 1000)]
+
+# ❌ INCORRECTO: Bucle ineficiente
+calculate_inefficient <- function(dt) {
+  result <- copy(dt)
+  for(i in 1:nrow(result)) {
+    result[i, profit_margin := amount[i] * 0.2]
+  }
+  return(result)
+}
+
+# ✅ CORRECTO: Operación vectorizada
+calculate_efficient <- function(dt) {
+  result <- copy(dt)
+  result[, profit_margin := amount * 0.2]
+  return(result)
+}
+
+# Comparar tiempos
+time_inefficient <- system.time(result_bad <- calculate_inefficient(sample_trans))
+time_efficient <- system.time(result_good <- calculate_efficient(sample_trans))
+
+cat("Método con bucle:", round(time_inefficient[3], 4), "segundos\n")
+cat("Método vectorizado:", round(time_efficient[3], 4), "segundos\n")
+cat("Mejora:", round(time_inefficient[3] / time_efficient[3], 1), "x más rápido\n")
+
+# Verificar que los resultados son idénticos
+cat("Resultados idénticos:", identical(result_bad$profit_margin, result_good$profit_margin), "\n")
+```
+
+#### 2. **No Mezcles dplyr con data.table sin Cuidado**
+
+Mixing paradigmas puede causar copias inesperadas y pérdida de performance.
+
+```{r}
+#| label: donts-dplyr-mixing
+#| echo: true
+#| eval: false
+
+# ❌ PROBLEMÁTICO: Puede forzar copias y perder optimizaciones
+library(dplyr)
+employees_dt %>% 
+  mutate(new_salary = salary * 1.1) %>% 
+  filter(department == "Engineering") %>%
+  arrange(desc(salary))
+
+# ✅ CORRECTO: Sintaxis data.table pura
+employees_dt[, new_salary := salary * 1.1][
+  department == "Engineering"
+][order(-salary)]
+
+# ✅ ALTERNATIVA: dtplyr para sintaxis dplyr + performance data.table
+library(dtplyr)
+employees_dt %>% 
+  lazy_dt() %>%
+  mutate(new_salary = salary * 1.1) %>% 
+  filter(department == "Engineering") %>%
+  arrange(desc(salary)) %>%
+  as.data.table()
+```
+
+#### 3. **No Ignores la Gestión de Memoria**
+
+Crear copias innecesarias puede agotar la memoria rápidamente.
+
+```{r}
+#| label: donts-memory-examples
+#| echo: true
+
+# Demostrar el problema con copias
+demo_dt <- employees_dt[1:1000]
+
+# ❌ INCORRECTO: Crear múltiples copias
+measure_memory_waste <- function() {
+  copy1 <- copy(demo_dt)
+  copy2 <- copy(demo_dt)
+  copy3 <- copy(demo_dt)
+  
+  # Modificaciones que podrían haberse hecho por referencia
+  copy1[, bonus1 := salary * 0.1]
+  copy2[, bonus2 := salary * 0.15]
+  copy3[, bonus3 := salary * 0.2]
+  
+  return(list(copy1, copy2, copy3))
+}
+
+# ✅ CORRECTO: Trabajar con referencias
+measure_memory_efficient <- function() {
+  working_dt <- demo_dt  # Solo una referencia
+  
+  # Todas las modificaciones por referencia
+  working_dt[, `:=`(
+    bonus1 = salary * 0.1,
+    bonus2 = salary * 0.15, 
+    bonus3 = salary * 0.2
+  )]
+  
+  return(working_dt)
+}
+
+# Nota: En este ejemplo, usamos copias pequeñas para demostrar el concepto
+# sin consumir mucha memoria en el tutorial
+memory_waste <- object.size(measure_memory_waste())
+memory_efficient <- object.size(measure_memory_efficient())
+
+cat("Enfoque con múltiples copias:", format(memory_waste, units = "KB"), "\n")
+cat("Enfoque eficiente:", format(memory_efficient, units = "KB"), "\n")
+```
+
+#### 4. **No Uses `rbind()` Repetitivo**
+
+Construir tablas fila por fila es extremadamente ineficiente.
+
+```{r}
+#| label: donts-rbind-examples
+#| echo: true
+
+# ❌ INCORRECTO: rbind repetitivo (simulado para evitar demora)
+build_table_bad <- function(n) {
+  result <- data.table()
+  # Simulamos solo algunas iteraciones para el ejemplo
+  for(i in 1:min(n, 50)) {  # Limitamos a 50 para el ejemplo
+    new_row <- data.table(
+      id = i, 
+      value = rnorm(1),
+      category = sample(LETTERS[1:3], 1)
+    )
+    result <- rbind(result, new_row)
+  }
+  return(result)
+}
+
+# ✅ CORRECTO: Crear toda la tabla de una vez
+build_table_good <- function(n) {
+  data.table(
+    id = 1:n,
+    value = rnorm(n),
+    category = sample(LETTERS[1:3], n, replace = TRUE)
+  )
+}
+
+# Comparar tiempos
+n_rows <- 50  # Pequeño para el ejemplo
+time_bad <- system.time(table_bad <- build_table_bad(n_rows))
+time_good <- system.time(table_good <- build_table_good(n_rows))
+
+cat("Método rbind repetitivo:", round(time_bad[3], 4), "segundos\n")
+cat("Método eficiente:", round(time_good[3], 4), "segundos\n")
+cat("Diferencia:", round(time_bad[3] / time_good[3], 1), "x más lento\n")
+
+# Para tablas grandes, la diferencia sería dramática
+cat("\nNota: Para 10,000 filas, el método rbind puede ser 100-1000x más lento\n")
+```
+
+## Patrones de Código Idiomático {#sec-patrones}
+
+### 1. **Análisis Exploratorio de Datos**
+
+```{r}
+#| label: pattern-eda
+#| echo: true
+
+# Patrón: Resumen rápido de todas las variables numéricas
+eda_summary <- employees_dt[, lapply(.SD, function(x) {
+  if(is.numeric(x)) {
+    list(
+      count = sum(!is.na(x)),
+      mean = round(mean(x, na.rm = TRUE), 2),
+      median = round(median(x, na.rm = TRUE), 2),
+      min = min(x, na.rm = TRUE),
+      max = max(x, na.rm = TRUE),
+      missing = sum(is.na(x))
+    )
+  }
+}), .SDcols = is.numeric]
+
+print(eda_summary)
+
+# Patrón: Distribución de variables categóricas
+categorical_summary <- employees_dt[, .(
+  count = .N,
+  avg_salary = round(mean(salary), 0),
+  median_performance = median(as.numeric(performance_score))
+), by = .(department, remote_work)][order(department, -avg_salary)]
+
+print(categorical_summary)
+```
+
+### 2. **Limpieza y Validación de Datos**
+
+```{r}
+#| label: pattern-data-cleaning
+#| echo: true
+
+# Patrón: Identificar y manejar outliers
+identify_outliers <- function(dt, column) {
+  Q1 <- quantile(dt[[column]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(dt[[column]], 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+  
+  dt[, paste0(column, "_outlier") := get(column) < lower_bound | get(column) > upper_bound]
+  
+  return(dt[get(paste0(column, "_outlier")) == TRUE])
+}
+
+# Identificar outliers en salarios
+salary_outliers <- identify_outliers(copy(employees_dt), "salary")
+cat("Outliers en salarios encontrados:", nrow(salary_outliers), "\n")
+print(head(salary_outliers[, .(employee_id, department, salary)]))
+
+# Patrón: Validación de integridad de datos
+data_quality_check <- employees_dt[, .(
+  total_records = .N,
+  missing_salary = sum(is.na(salary)),
+  invalid_performance = sum(performance_score < 1 | performance_score > 5, na.rm = TRUE),
+  future_hire_dates = sum(hire_date > Sys.Date(), na.rm = TRUE),
+  negative_salaries = sum(salary < 0, na.rm = TRUE)
+)]
+
+print(data_quality_check)
+```
+
+### 3. **Análisis de Series Temporales**
+
+```{r}
+#| label: pattern-time-series
+#| echo: true
+
+# Patrón: Agregaciones temporales con rolling windows
+# Crear datos temporales
+daily_sales <- transactions_dt[, .(
+  daily_revenue = sum(amount),
+  transaction_count = .N
+), by = transaction_date][order(transaction_date)]
+
+# Rolling average de 7 días
+daily_sales[, `:=`(
+  revenue_7day_avg = frollmean(daily_revenue, 7, align = "right"),
+  revenue_7day_sum = frollsum(daily_revenue, 7, align = "right"),
+  growth_rate = (daily_revenue / data.table::shift(daily_revenue, 1) - 1) * 100
+)]
+
+print(head(daily_sales[!is.na(revenue_7day_avg)], 10))
+
+# Patrón: Análisis de tendencias por período
+monthly_trends <- transactions_dt[, .(
+  total_revenue = sum(amount),
+  avg_transaction = round(mean(amount), 2),
+  transaction_count = .N
+), by = .(year = year(transaction_date), month = month(transaction_date))][
+  order(year, month)
+][, `:=`(
+  revenue_growth = (total_revenue / data.table::shift(total_revenue, 1) - 1) * 100,
+  period = paste0(year, "-", sprintf("%02d", month))
+)]
+
+print(head(monthly_trends, 12))
+```
+
+### 4. **Análisis de Cohortes**
+
+```{r}
+#| label: pattern-cohort-analysis
+#| echo: true
+
+# Patrón: Análisis de cohorte de empleados por año de contratación
+cohort_analysis <- employees_dt[, hire_year := year(hire_date)][, .(
+  cohort_size = .N,
+  avg_current_salary = round(mean(salary), 0),
+  avg_performance = round(mean(performance_score), 2),
+  retention_rate = round(.N / employees_dt[year(hire_date) == hire_year, .N] * 100, 1)
+), by = hire_year][order(hire_year)]
+
+print(cohort_analysis)
+
+# Patrón: Segmentación de clientes por comportamiento
+customer_segmentation <- transactions_dt[, .(
+  total_spent = sum(amount),
+  transaction_frequency = .N,
+  avg_transaction = round(mean(amount), 2),
+  days_active = as.numeric(max(transaction_date) - min(transaction_date)) + 1,
+  favorite_category = names(sort(table(product_category), decreasing = TRUE))[1]
+), by = customer_id][, `:=`(
+  spending_tier = cut(total_spent, 
+                     breaks = quantile(total_spent, c(0, 0.33, 0.66, 1)), 
+                     labels = c("Low", "Medium", "High"),
+                     include.lowest = TRUE),
+  frequency_tier = cut(transaction_frequency,
+                      breaks = quantile(transaction_frequency, c(0, 0.5, 1)),
+                      labels = c("Occasional", "Frequent"),
+                      include.lowest = TRUE)
+)]
+
+# Resumen de segmentación
+segment_summary <- customer_segmentation[, .(
+  customers = .N,
+  avg_total_spent = round(mean(total_spent), 2),
+  avg_frequency = round(mean(transaction_frequency), 1)
+), by = .(spending_tier, frequency_tier)]
+
+print(segment_summary)
+```
+
+## Debugging y Troubleshooting {#sec-debugging}
+
+### 1. **Herramientas de Diagnóstico**
+
+```{r}
+#| label: debug-tools
+#| echo: true
+
+# Función para inspeccionar comprehensivamente un data.table
+inspect_dt <- function(dt, name = "data.table") {
+  cat("=== Inspección de", name, "===\n")
+  cat("Dimensiones:", nrow(dt), "x", ncol(dt), "\n")
+  cat("Memoria:", format(object.size(dt), units = "MB"), "\n")
+  cat("Key:", ifelse(is.null(key(dt)), "Ninguna", paste(key(dt), collapse = ", ")), "\n")
+  cat("Índices:", length(indices(dt)), "\n")
+  if(length(indices(dt)) > 0) {
+    cat("Índices disponibles:\n")
+    for(idx in indices(dt)) {
+      cat("  -", paste(idx, collapse = ", "), "\n")
+    }
+  }
+  cat("Clases de columnas:\n")
+  col_classes <- sapply(dt, function(x) paste(class(x), collapse = ", "))
+  for(i in seq_along(col_classes)) {
+    cat("  ", names(col_classes)[i], ":", col_classes[i], "\n")
+  }
+  cat("Valores faltantes por columna:\n")
+  missing_counts <- dt[, lapply(.SD, function(x) sum(is.na(x)))]
+  for(i in seq_along(missing_counts)) {
+    cat("  ", names(missing_counts)[i], ":", missing_counts[[i]], "\n")
+  }
+  cat("\n")
+}
+
+# Inspeccionar nuestros datasets principales
+inspect_dt(employees_dt[1:1000], "employees_dt (muestra)")
+```
+
+### 2. **Debugging de Operaciones Complejas**
+
+```{r}
+#| label: debug-complex-operations
+#| echo: true
+
+# Función para debuggear operaciones paso a paso
+debug_complex_operation <- function(dt, verbose = TRUE) {
+  if(verbose) cat("Paso 1: Filtrado inicial\n")
+  step1 <- dt[salary > 70000 & !is.na(performance_score)]
+  if(verbose) cat("  Filas después del filtro:", nrow(step1), "\n")
+  
+  if(verbose) cat("Paso 2: Cálculos por grupo\n")
+  step2 <- step1[, .(
+    avg_salary = mean(salary),
+    avg_performance = mean(performance_score),
+    count = .N,
+    salary_std = sd(salary)
+  ), by = department]
+  if(verbose) cat("  Grupos creados:", nrow(step2), "\n")
+  
+  if(verbose) cat("Paso 3: Filtrado post-agregación\n")
+  step3 <- step2[count >= 10]  # Solo departamentos con suficientes empleados
+  if(verbose) cat("  Grupos finales:", nrow(step3), "\n")
+  
+  if(verbose) cat("Paso 4: Ordenamiento final\n")
+  result <- step3[order(-avg_salary)]
+  
+  return(result)
+}
+
+# Ejecutar con debugging
+result_debug <- debug_complex_operation(employees_dt, verbose = TRUE)
+print(result_debug)
+```
+
+### 3. **Validación y Testing**
+
+```{r}
+#| label: debug-validation
+#| echo: true
+
+# Función para validar resultados de operaciones
+validate_operation <- function(original_dt, result_dt, operation_name) {
+  cat("=== Validación de", operation_name, "===\n")
+  
+  # Verificar que no se perdieron datos inesperadamente
+  if("by" %in% names(attributes(result_dt))) {
+    cat("Operación de agregación detectada\n")
+  } else {
+    rows_ratio <- nrow(result_dt) / nrow(original_dt)
+    cat("Ratio de filas resultado/original:", round(rows_ratio, 3), "\n")
+    if(rows_ratio > 1) {
+      cat("⚠️ ADVERTENCIA: El resultado tiene más filas que el original\n")
+    }
+  }
+  
+  # Verificar valores faltantes
+  original_na <- original_dt[, lapply(.SD, function(x) sum(is.na(x)))]
+  result_na <- result_dt[, lapply(.SD, function(x) sum(is.na(x)))]
+  
+  cat("NAs en original:", sum(unlist(original_na)), "\n")
+  cat("NAs en resultado:", sum(unlist(result_na)), "\n")
+  
+  # Verificar tipos de datos
+  original_types <- sapply(original_dt, class)
+  result_types <- sapply(result_dt, class)
+  
+  common_cols <- intersect(names(original_types), names(result_types))
+  type_changes <- sapply(common_cols, function(col) {
+    !identical(original_types[[col]], result_types[[col]])
+  })
+  
+  if(any(type_changes)) {
+    cat("⚠️ ADVERTENCIA: Cambios de tipo detectados en columnas:", 
+        paste(names(type_changes)[type_changes], collapse = ", "), "\n")
+  } else {
+    cat("✅ Tipos de datos preservados correctamente\n")
+  }
+  
+  cat("\n")
+}
+
+# Ejemplo de validación
+sample_employees <- employees_dt[1:1000]
+filtered_result <- sample_employees[salary > 80000]
+validate_operation(sample_employees, filtered_result, "filtrado por salario")
+
+aggregated_result <- sample_employees[, .(avg_salary = mean(salary)), by = department]
+validate_operation(sample_employees, aggregated_result, "agregación por departamento")
+```
+
+## Estilo de Código y Convenciones {#sec-estilo}
+
+### 1. **Naming Conventions**
+
+```{r}
+#| label: style-naming
+#| echo: true
+#| eval: false
+
+# ✅ CORRECTO: Nombres descriptivos
+customer_lifetime_value <- transactions_dt[, .(
+  total_revenue = sum(amount),
+  avg_order_value = mean(amount),
+  transaction_count = .N
+), by = customer_id]
+
+# ✅ CORRECTO: Consistencia en naming
+dt_sales_daily <- transactions_dt[, .(daily_revenue = sum(amount)), by = transaction_date]
+dt_sales_monthly <- transactions_dt[, .(monthly_revenue = sum(amount)), 
+                                   by = .(year = year(transaction_date), 
+                                          month = month(transaction_date))]
+
+# ✅ CORRECTO: Prefijos para variables temporales
+tmp_high_value_customers <- customer_lifetime_value[total_revenue > 1000]
+temp_analysis_result <- tmp_high_value_customers[, .N, by = .(revenue_tier = cut(total_revenue, 3))]
+```
+
+### 2. **Formateo y Organización**
+
+```{r}
+#| label: style-formatting
+#| echo: true
+
+# ✅ CORRECTO: Formateo claro para operaciones complejas
+complex_analysis <- employees_dt[
+  # Filtros principales
+  salary > 50000 & 
+  !is.na(performance_score) & 
+  tenure_years >= 1,
+  
+  # Cálculos
+  .(
+    employee_count = .N,
+    avg_salary = round(mean(salary), 0),
+    median_salary = round(median(salary), 0),
+    salary_range = max(salary) - min(salary),
+    top_performer_ratio = sum(performance_score >= 4) / .N,
+    remote_work_ratio = sum(remote_work, na.rm = TRUE) / .N
+  ),
+  
+  # Agrupación
+  by = .(
+    department,
+    salary_tier = cut(salary, 
+                     breaks = c(0, 60000, 90000, Inf), 
+                     labels = c("Entry", "Mid", "Senior"))
+  )
+][
+  # Post-procesamiento
+  employee_count >= 5  # Solo grupos con suficientes empleados
+][
+  # Ordenamiento
+  order(department, -avg_salary)
+]
+
+print(head(complex_analysis))
+```
+
+### 3. **Documentación y Comentarios**
+
+```{r}
+#| label: style-documentation
+#| echo: true
+
+# Función bien documentada para análisis de retención
+analyze_employee_retention <- function(employees_dt, analysis_date = Sys.Date()) {
+  #' Analiza patrones de retención de empleados
+  #' 
+  #' @param employees_dt data.table con datos de empleados
+  #' @param analysis_date Fecha de referencia para el análisis
+  #' @return data.table con métricas de retención por departamento
+  
+  # Calcular métricas base
+  employees_dt[, `:=`(
+    tenure_years = as.numeric(analysis_date - hire_date) / 365.25,
+    is_long_tenure = tenure_years >= 3
+  )]
+  
+  # Análisis de retención por departamento
+  retention_analysis <- employees_dt[
+    !is.na(tenure_years),
+    .(
+      total_employees = .N,
+      avg_tenure = round(mean(tenure_years), 2),
+      retention_3_year = sum(is_long_tenure) / .N,
+      avg_salary_retained = mean(salary[is_long_tenure]),
+      avg_salary_new = mean(salary[!is_long_tenure])
+    ),
+    by = department
+  ][
+    order(-retention_3_year)
+  ]
+  
+  return(retention_analysis)
+}
+
+# Uso de la función
+retention_results <- analyze_employee_retention(employees_dt)
+print(retention_results)
+```
+
+## Testing y Validación {#sec-testing}
+
+### 1. **Unit Tests para Funciones data.table**
+
+```{r}
+#| label: testing-unit-tests
+#| echo: true
+
+# Función simple para testing
+calculate_employee_bonus <- function(salary, performance_score, department) {
+  base_bonus <- salary * 0.1
+  performance_multiplier <- performance_score / 3
+  department_bonus <- fifelse(department == "Sales", salary * 0.05, 0)
+  
+  return(base_bonus * performance_multiplier + department_bonus)
+}
+
+# Tests básicos
+test_bonus_calculation <- function() {
+  # Test 1: Cálculo básico
+  test_salary <- 100000
+  test_performance <- 3
+  test_dept <- "Engineering"
+  
+  expected_bonus <- (100000 * 0.1) * (3/3) + 0  # 10000
+  actual_bonus <- calculate_employee_bonus(test_salary, test_performance, test_dept)
+  
+  cat("Test 1 - Cálculo básico:", 
+      ifelse(abs(actual_bonus - expected_bonus) < 0.01, "✅ PASS", "❌ FAIL"), "\n")
+  
+  # Test 2: Bonus de ventas
+  test_dept_sales <- "Sales"
+  expected_bonus_sales <- (100000 * 0.1) * (3/3) + (100000 * 0.05)  # 15000
+  actual_bonus_sales <- calculate_employee_bonus(test_salary, test_performance, test_dept_sales)
+  
+  cat("Test 2 - Bonus de ventas:", 
+      ifelse(abs(actual_bonus_sales - expected_bonus_sales) < 0.01, "✅ PASS", "❌ FAIL"), "\n")
+  
+  # Test 3: Performance alto
+  test_performance_high <- 5
+  expected_bonus_high <- (100000 * 0.1) * (5/3) + 0  # 16666.67
+  actual_bonus_high <- calculate_employee_bonus(test_salary, test_performance_high, test_dept)
+  
+  cat("Test 3 - Performance alto:", 
+      ifelse(abs(actual_bonus_high - expected_bonus_high) < 1, "✅ PASS", "❌ FAIL"), "\n")
+}
+
+# Ejecutar tests
+test_bonus_calculation()
+
+# Aplicar a datos reales
+employees_dt[, calculated_bonus := calculate_employee_bonus(salary, performance_score, department)]
+print(head(employees_dt[, .(employee_id, department, salary, performance_score, calculated_bonus)]))
+```
+
+### 2. **Validation de Integridad de Datos**
+
+```{r}
+#| label: testing-data-integrity
+#| echo: true
+
+# Suite completa de validación
+validate_data_integrity <- function(dt, table_name = "data.table") {
+  cat("=== Validación de Integridad:", table_name, "===\n")
+  
+  validation_results <- list()
+  
+  # 1. Verificar duplicados en ID
+  if("employee_id" %in% names(dt)) {
+    duplicate_ids <- dt[, .N, by = employee_id][N > 1]
+    validation_results$duplicate_ids <- nrow(duplicate_ids)
+    cat("IDs duplicados:", nrow(duplicate_ids), 
+        ifelse(nrow(duplicate_ids) == 0, "✅", "❌"), "\n")
+  }
+  
+  # 2. Verificar rangos válidos
+  if("salary" %in% names(dt)) {
+    invalid_salaries <- dt[salary < 0 | salary > 1000000, .N]
+    validation_results$invalid_salaries <- invalid_salaries
+    cat("Salarios inválidos:", invalid_salaries, 
+        ifelse(invalid_salaries == 0, "✅", "❌"), "\n")
+  }
+  
+  if("performance_score" %in% names(dt)) {
+    invalid_performance <- dt[performance_score < 1 | performance_score > 5, .N]
+    validation_results$invalid_performance <- invalid_performance
+    cat("Scores de performance inválidos:", invalid_performance,
+        ifelse(invalid_performance == 0, "✅", "❌"), "\n")
+  }
+  
+  # 3. Verificar fechas
+  if("hire_date" %in% names(dt)) {
+    future_dates <- dt[hire_date > Sys.Date(), .N]
+    very_old_dates <- dt[hire_date < as.Date("1950-01-01"), .N]
+    validation_results$future_dates <- future_dates
+    validation_results$very_old_dates <- very_old_dates
+    cat("Fechas futuras:", future_dates, ifelse(future_dates == 0, "✅", "❌"), "\n")
+    cat("Fechas muy antiguas:", very_old_dates, ifelse(very_old_dates == 0, "✅", "❌"), "\n")
+  }
+  
+  # 4. Verificar consistencia referencial
+  if(all(c("manager_id", "employee_id") %in% names(dt))) {
+    orphan_managers <- dt[!is.na(manager_id) & !manager_id %in% employee_id, .N]
+    validation_results$orphan_managers <- orphan_managers
+    cat("Managers inexistentes:", orphan_managers, 
+        ifelse(orphan_managers == 0, "✅", "❌"), "\n")
+  }
+  
+  # Resumen
+  total_issues <- sum(unlist(validation_results))
+  cat("\nResumen: Total de issues encontrados:", total_issues, 
+      ifelse(total_issues == 0, "✅ Datos válidos", "❌ Requiere atención"), "\n\n")
+  
+  return(validation_results)
+}
+
+# Ejecutar validación
+integrity_results <- validate_data_integrity(employees_dt, "employees_dt")
+```
+
+## Ejercicio Final: Refactoring de Código {#sec-ejercicio-refactoring}
+
+::: {.callout-note icon="false"}
+## 🛠️ Ejercicio 9: Refactoring Completo
+
+Toma el siguiente código mal escrito y refactorízalo aplicando todas las buenas prácticas:
+
+```r
+# CÓDIGO MALO para refactorizar
+bad_analysis <- function(data) {
+  result <- data.frame()
+  
+  for(dept in unique(data$department)) {
+    dept_data <- data[data$department == dept, ]
+    
+    for(year in 2020:2024) {
+      year_data <- dept_data[as.numeric(format(dept_data$hire_date, "%Y")) == year, ]
+      
+      if(nrow(year_data) > 0) {
+        avg_sal <- mean(year_data$salary)
+        count <- nrow(year_data)
+        high_performers <- nrow(year_data[year_data$performance_score >= 4, ])
+        
+        new_row <- data.frame(
+          department = dept,
+          hire_year = year,
+          avg_salary = avg_sal,
+          employee_count = count,
+          high_performer_count = high_performers,
+          high_performer_rate = high_performers / count
+        )
+        
+        result <- rbind(result, new_row)
+      }
+    }
+  }
+  
+  return(result)
+}
+```
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 9
+
+```{r}
+#| label: solucion-ejercicio-9
+#| echo: true
+
+# CÓDIGO REFACTORIZADO aplicando buenas prácticas
+good_analysis <- function(employees_dt) {
+  #' Analiza empleados por departamento y año de contratación
+  #' @param employees_dt data.table con datos de empleados
+  #' @return data.table con análisis agregado
+  
+  # Validación de entrada
+  required_cols <- c("department", "hire_date", "salary", "performance_score")
+  if(!all(required_cols %in% names(employees_dt))) {
+    stop("Faltan columnas requeridas: ", 
+         paste(setdiff(required_cols, names(employees_dt)), collapse = ", "))
+  }
+  
+  # Una sola operación vectorizada que reemplaza todos los bucles
+  result <- employees_dt[
+    # Filtro para años de interés
+    year(hire_date) %between% c(2020, 2024),
+    
+    # Cálculos agregados
+    .(
+      avg_salary = round(mean(salary, na.rm = TRUE), 0),
+      employee_count = .N,
+      high_performer_count = sum(performance_score >= 4, na.rm = TRUE),
+      median_salary = median(salary, na.rm = TRUE),
+      salary_std = round(sd(salary, na.rm = TRUE), 0)
+    ),
+    
+    # Agrupación
+    by = .(department, hire_year = year(hire_date))
+  ][
+    # Cálculos derivados
+    , high_performer_rate := round(high_performer_count / employee_count, 3)
+  ][
+    # Filtrar grupos pequeños
+    employee_count >= 3
+  ][
+    # Ordenamiento lógico
+    order(department, hire_year)
+  ]
+  
+  return(result)
+}
+
+# Comparar rendimiento
+sample_employees <- employees_dt[sample(.N, 5000)]
+
+# Tiempo del método refactorizado
+tiempo_bueno <- system.time({
+  resultado_bueno <- good_analysis(sample_employees)
+})
+
+cat("Método refactorizado:", round(tiempo_bueno[3], 4), "segundos\n")
+cat("Filas resultado:", nrow(resultado_bueno), "\n")
+
+print(head(resultado_bueno))
+
+# Verificación adicional: completeness
+cat("\nVerificación de completeness:\n")
+cat("Departamentos únicos en original:", uniqueN(sample_employees$department), "\n")
+cat("Departamentos únicos en resultado:", uniqueN(resultado_bueno$department), "\n")
+cat("Años únicos en resultado:", paste(sort(unique(resultado_bueno$hire_year)), collapse = ", "), "\n")
+```
+
+**Mejoras aplicadas en el refactoring:**
+
+1. **Eliminación total de bucles**: Una sola operación `by` vectorizada
+2. **Sin rbind repetitivo**: El resultado se construye eficientemente
+3. **Validación de entrada**: Verificación de columnas requeridas
+4. **Operaciones vectorizadas**: `mean()`, `sum()`, `.N` son nativamente rápidas
+5. **Sintaxis data.table pura**: Sin conversiones a/desde data.frame
+6. **Filtros inteligentes**: Eliminación de grupos pequeños
+7. **Cálculos derivados**: Usando `:=` para eficiencia
+8. **Documentación**: Función bien documentada
+9. **Manejo de NAs**: Parámetro `na.rm = TRUE` donde corresponde
+10. **Ordenamiento lógico**: Resultado ordenado para mejor interpretación
+:::
+
+## Próximo Capítulo: Integración con el Ecosistema
+
+En el siguiente y último capítulo exploraremos:
+- **Integración con `ggplot2`** para visualización de datos
+- **Workflows con `shiny`** para aplicaciones interactivas  
+- **Interoperabilidad con `tidymodels`** para machine learning
+- **Conexión con bases de datos** y sistemas Big Data
+- **dtplyr**: El puente entre data.table y tidyverse
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **El operador `:=`** es fundamental para código eficiente en data.table
+2. **Los bucles explícitos** destruyen todas las optimizaciones - usa vectorización
+3. **setkey()** es crucial para datasets grandes y operaciones repetitivas
+4. **La gestión de memoria** puede marcar la diferencia entre código viable e inviable
+5. **Validación y testing** previenen errores costosos en análisis de datos
+6. **El estilo consistente** hace el código mantenible y colaborativo
+7. **Una operación data.table bien diseñada** puede reemplazar cientos de líneas de código tradicional
+:::
+
+Has dominado las buenas prácticas de `data.table`. En el próximo capítulo veremos cómo integrar todo este poder con el ecosistema R para crear soluciones completas de análisis de datos.

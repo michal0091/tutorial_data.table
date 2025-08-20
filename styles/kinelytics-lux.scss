@@ -1,0 +1,126 @@
+/*-- scss:defaults --*/
+
+// Kinelytics Theme based on Lux Bootswatch
+// Overrides defaults using _brand.yml values
+
+// 1. Import Google Fonts specified in _brand.yml
+@import url('https://fonts.googleapis.com/css2?family=Exo+2:wght@400;800&family=Fira+Mono:wght@400&display=swap');
+
+// 2. Define Brand Colors from _brand.yml palette
+//    (These will be used to override Bootstrap variables below)
+$kinelytics-black:       #142021;
+$kinelytics-white:       #f0f5ef;
+$kinelytics-blue-green:  #1f3a3d;
+$kinelytics-green:       #2c5e68;
+$kinelytics-blue:        #507c8b;
+$kinelytics-light:       #b8d6c6;
+$kinelytics-red:         #d9534f;
+$kinelytics-orange:      #f0ad4e;
+$kinelytics-light-green: #5cb85c;
+
+// 3. Override Bootstrap Color System variables using brand colors
+//    Mapping based on the roles defined in _brand.yml
+$white:     $kinelytics-white;       // Override base $white
+$black:     $kinelytics-black;       // Override base $black
+
+$primary:   $kinelytics-blue-green;  // Was $gray-900 in Lux
+$secondary: $kinelytics-green;       // Was $white in Lux
+$success:   $kinelytics-light-green; // Was $green in Lux (we use a specific light-green)
+$info:      $kinelytics-blue;        // Was $cyan in Lux
+$warning:   $kinelytics-orange;      // Was $yellow in Lux
+$danger:    $kinelytics-red;         // Was $red in Lux (same hex, but ensures consistency)
+$light:     $kinelytics-light;       // Was $white in Lux
+$dark:      $kinelytics-blue-green;  // Was $gray-800 in Lux
+
+// 4. Override Body Colors
+$body-bg:    $kinelytics-white;      // Page background
+$body-color: $kinelytics-black;      // Default text color (was $gray-700 in Lux)
+
+// 5. Override Typography Variables
+// Fonts
+$font-family-sans-serif: "Exo 2", sans-serif;             
+$font-family-monospace:  "Fira Mono", monospace;
+$font-weight-base:       400;                             
+
+// Headings
+$headings-font-family:   "Exo 2", sans-serif;             // Corresponds to headings.family
+$headings-font-weight:   800;                             // Corresponds to headings.weight (was 600 in Lux)
+$headings-color:         $kinelytics-black;               // Ensure headings use the main text color (was $gray-900 in Lux)
+$h1-font-size:           1.75rem;                            // Keep Lux sizes or adjust if needed
+$h2-font-size:           1.5rem;
+$h3-font-size:           1.25rem;
+$h4-font-size:           1rem;
+$h5-font-size:           .75rem;
+$h6-font-size:           .60rem;
+
+// Links
+$link-color:             $kinelytics-blue-green;          // Corresponds to link: primary in _brand.yml
+$link-hover-color: darken($link-color, 15%);
+
+// Code
+$code-color: $kinelytics-green;
+
+// 6. Other Optional Overrides (Keep Lux defaults unless needed)
+// $enable-rounded: false; // Lux already has this
+// $border-radius: 0;      // If you want to be explicit
+
+// Adjust minimum contrast ratio if needed based on the new palette
+// $min-contrast-ratio: 2.3; // Lux default - review WCAG compliance with your colors
+
+
+/*-- scss:rules --*/
+
+// Example: Ensure heading font weight is applied correctly
+h1, h2, h3, h4, h5, h6 {
+  font-weight: $headings-font-weight; // Explicitly use the variable defined above
+}
+
+// Example: Style code blocks with a specific background
+pre, code {
+  font-family: $font-family-monospace;
+  font-size: 0.9em; // Slightly smaller code font
+}
+pre {
+  background-color: lighten($kinelytics-light, 5%); // Very light background for code blocks
+  border: 1px solid darken($kinelytics-light, 5%);
+  padding: 1em;
+}
+
+// Example: Customize blockquote style
+blockquote {
+  border-left: 4px solid $primary; // Use primary color for border
+  padding-left: 1rem;
+  color: lighten($body-color, 20%); // Slightly lighter text
+  font-style: italic;
+}
+
+// Ajustar el tamaño del logo en la barra de navegación
+.navbar-brand img {
+    height: 45px;  // 
+    width: auto;   // Permite que el ancho se ajuste automáticamente para mantener la proporción
+    max-height: none; // Sobrescribe cualquier max-height restrictivo del tema base
+  }
+
+// Forzar Exo 2 donde no se aplica por especificidad
+body, p { // Asegura para el cuerpo y párrafos
+  font-family: $font-family-sans-serif !important; // !important como último recurso
+}
+
+// Workaround para apilar botones verticalmente (ya que d-grid no funciona)
+// Aplica esto al contenedor específico de tus botones en index.qmd
+// Asumiendo que le diste la clase 'button-container-inner' al div que los contiene:
+// Asegurar apilamiento vertical incluso en pantallas anchas
+
+@media (min-width: 768px) {
+  // Intenta con un selector más específico usando un ID si existe
+  #columna-botones .button-container-inner > a.btn { // <--- Selector más específico
+     display: block !important;
+     width: 100% !important;
+     margin-bottom: 0.75rem;
+     box-sizing: border-box;
+  }
+  // Asegúrate también que el contenedor no se haga flex/grid si no quieres
+  #columna-botones .button-container-inner {
+     display: block !important; // O el display que necesite el contenedor
+  }
+}

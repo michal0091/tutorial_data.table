@@ -1,0 +1,31 @@
+Package: tutorial.data.table
+Type: Book
+Title: Domina data.table en R
+Version: 1.0.0
+Authors@R: person("Michal", "Kinel", email = "michal@kinelytics.com", role = c("aut", "cre"))
+Description: Tutorial completo del paquete más rápido para manipulación de datos en R.
+License: MIT + file LICENSE
+URL: https://michal0091.github.io/tutorial_data.table/
+BugReports: https://github.com/michal0091/tutorial_data.table/issues
+Depends: 
+    R (>= 4.0.0)
+Imports:
+    data.table (>= 1.14.0),
+    ggplot2 (>= 3.3.0),
+    DT (>= 0.18),
+    scales (>= 1.1.0),
+    knitr (>= 1.30),
+    lubridate (>= 1.7.0),
+    webshot2 (>= 0.1.0),
+    tictoc (>= 1.0)
+Suggests:
+    plotly (>= 4.9.0),
+    shiny (>= 1.6.0),
+    shinydashboard (>= 0.7.0),
+    arrow (>= 5.0.0),
+    RSQLite (>= 2.2.0),
+    DBI (>= 1.1.0),
+    microbenchmark (>= 1.4.0),
+    tidymodels (>= 0.1.0)
+Encoding: UTF-8
+Language: es

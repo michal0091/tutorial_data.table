@@ -1,0 +1,197 @@
+# Prefacio {.unnumbered}
+
+::: {.callout-tip icon="false"}
+## ¡Bienvenido al mundo de `data.table`! 🚀
+
+Este tutorial te llevará desde los conceptos básicos hasta las técnicas más avanzadas del paquete **más rápido** para manipulación de datos en R.
+:::
+
+## ¿Por qué `data.table`?
+
+En el ecosistema de R, cuando hablamos de manipulación eficiente de datos, `data.table` es el **rey indiscutible**. No es solo una mejora incremental sobre `data.frame` - es una reimaginación completa de cómo deberían funcionar las operaciones con datos.
+
+### Los Tres Pilares de `data.table`
+
+```{r}
+#| label: setup
+#| include: false
+#| echo: false
+
+library(data.table)
+library(ggplot2)
+library(knitr)
+library(DT)
+library(microbenchmark)
+
+# Configuración global
+options(datatable.print.nrows = 6)
+options(datatable.print.class = TRUE)
+
+# Tema ggplot personalizado
+theme_dt <- theme_minimal() +
+  theme(
+    plot.title = element_text(color = "#2E8B57", size = 14, face = "bold"),
+    plot.subtitle = element_text(color = "#2c3e50", size = 12),
+    axis.title = element_text(color = "#2c3e50", size = 11),
+    axis.text = element_text(color = "#2c3e50", size = 10),
+    legend.title = element_text(color = "#2c3e50", size = 11),
+    legend.text = element_text(color = "#2c3e50", size = 10)
+  )
+
+# Establecer como tema por defecto
+theme_set(theme_dt)
+```
+
+::: {.panel-tabset}
+
+## 🚀 **Velocidad**
+`data.table` está escrito en C y optimizado hasta el último detalle. Para datasets grandes, la diferencia puede ser de **segundos vs. horas**.
+
+## 🧠 **Memoria**
+Su característica de **modificación por referencia** significa que no crea copias innecesarias de tus datos. Un dataset de 1GB sigue siendo 1GB, no 3GB.
+
+## ✍️ **Sintaxis**
+La sintaxis `DT[i, j, by]` es consistente y poderosa. Una vez que la dominas, puedes expresar operaciones complejas de forma increíblemente concisa.
+
+:::
+
+## ¿Para quién es este tutorial?
+
+Este tutorial está diseñado para:
+
+- **Usuarios de R base** que quieren acelerar dramáticamente su flujo de trabajo
+- **Usuarios de `dplyr`** que necesitan manejar datasets más grandes
+- **Científicos de datos** que trabajan con millones de filas y necesitan eficiencia
+- **Analistas** que quieren una herramienta más potente para manipulación de datos
+
+## Lo que aprenderás
+
+Al final de este tutorial, serás capaz de:
+
+::: {.callout-note collapse="true"}
+## Habilidades que dominarás 🎯
+
+- ✅ **Sintaxis fundamental**: Dominar `DT[i, j, by]` como un experto
+- ✅ **Manipulación avanzada**: Joins, reshape, y operaciones complejas
+- ✅ **Optimización**: Escribir código `data.table` que vuela
+- ✅ **Integración**: Combinar `data.table` con `ggplot2`, `shiny`, y más
+- ✅ **Buenas prácticas**: Evitar errores comunes y escribir código mantenible
+:::
+
+## Estructura del Tutorial
+
+### **Módulo 1**: Fundamentos y Sintaxis Esencial
+Empezaremos desde cero: qué es un `data.table`, cómo se diferencia de un `data.frame`, y cómo dominar la sintaxis `DT[i, j, by]`.
+
+### **Módulo 2**: Manipulación de Datos Intermedia  
+Encadenamiento de operaciones, joins básicos, y técnicas que te harán más productivo.
+
+### **Módulo 3**: Técnicas Avanzadas y Funciones Especiales
+Los símbolos especiales (`.SD`, `.N`, etc.), joins avanzados, y reshape de datos.
+
+### **Módulo 4**: Optimización y Buenas Prácticas
+Cómo escribir código `data.table` realmente rápido y evitar errores comunes.
+
+### **Módulo 5**: Integración con el Ecosistema R
+Usar `data.table` con `ggplot2`, `shiny`, `tidymodels`, y otros paquetes populares.
+
+## Requisitos Previos
+
+### Conocimientos Necesarios
+- **R básico**: Vectores, listas, funciones básicas
+- **`data.frame` básico**: Indexación con `[filas, columnas]`
+- **Experiencia recomendada**: Haber trabajado con datos reales en R
+
+### Software Requerido
+
+```{r}
+#| eval: false
+#| echo: true
+
+# Instalación de paquetes necesarios
+install.packages(c("data.table", "ggplot2", "DT"))
+
+# Verificar versiones
+packageVersion("data.table")  # >= 1.14.0 recomendado
+```
+
+## Convenciones de este Tutorial
+
+### Iconos y Callouts
+
+::: {.callout-tip}
+## 💡 Consejo
+Consejos prácticos y mejores prácticas.
+:::
+
+::: {.callout-warning}
+## ⚠️ Cuidado
+Errores comunes y cómo evitarlos.
+:::
+
+::: {.callout-note}
+## 📝 Nota
+Información adicional y contexto.
+:::
+
+::: {.callout-important}
+## ❗ Importante
+Conceptos clave que debes recordar.
+:::
+
+### Código y Ejercicios
+
+Los **ejercicios prácticos** aparecerán en cajas especiales y tendrán sus soluciones explicadas paso a paso. Recomendamos encarecidamente que intentes resolver cada ejercicio antes de ver la solución.
+
+```{r}
+#| label: ejemplo-codigo
+#| echo: true
+
+# Los bloques de código incluirán explicaciones detalladas
+library(data.table)
+
+# Ejemplo simple: crear un data.table
+dt_ejemplo <- data.table(
+  id = 1:5,
+  valor = c(10, 20, 30, 40, 50),
+  categoria = c("A", "B", "A", "C", "B")
+)
+
+print(dt_ejemplo)
+```
+
+## Obtener Ayuda
+
+Si tienes preguntas durante tu aprendizaje:
+
+- **Documentación oficial**: `?data.table` en R
+- **Viñetas**: `browseVignettes("data.table")`
+- **Stack Overflow**: Tag `[data.table]`
+- **GitHub**: [Rdatatable/data.table](https://github.com/Rdatatable/data.table)
+
+## Contribuciones y Feedback
+
+Este tutorial es un proyecto vivo. Si encuentras errores, tienes sugerencias de mejora, o quieres contribuir con ejemplos adicionales, ¡tu participación es bienvenida!
+
+---
+
+::: {.callout-tip icon="false"}
+## 🎯 ¿Listo para comenzar?
+
+En el **próximo capítulo** configuraremos nuestro entorno y crearemos nuestro primer `data.table`. ¡El viaje hacia la maestría en manipulación de datos comienza ahora!
+:::
+
+---
+
+**Información del Sistema:**
+
+```{r}
+#| label: info-sistema
+#| echo: false
+
+# Información de la sesión
+cat("📅 Generado:", format(Sys.Date(), "%d de %B de %Y"), "\n")
+cat("🔧 Versión de R:", R.version.string, "\n")
+cat("📦 Versión de data.table:", as.character(packageVersion("data.table")), "\n")
+cat("📦 Versión de Quarto:", system("quarto --version", intern = TRUE), "\n")
+```

@@ -1,0 +1,411 @@
+# La Sintaxis `DT[i, j, by]` 
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- La estructura fundamental `DT[i, j, by]` 
+- Filtrado avanzado de filas con `i`
+- Selección y transformación de columnas con `j`
+- Agrupaciones poderosas con `by`
+- Combinación efectiva de los tres componentes
+:::
+
+```{r}
+#| label: setup-cap01-sintaxis
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(knitr)
+library(DT)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datos de ejemplo
+set.seed(123)
+empleados <- data.table(
+  id = 1:12,
+  nombre = c("Ana", "Juan", "María", "Carlos", "Lucía", "Pedro", 
+            "Isabel", "Miguel", "Carmen", "Jorge", "Laura", "Diego"),
+  departamento = rep(c("Ventas", "IT", "Marketing", "RRHH"), each = 3),
+  salario = c(35000, 42000, 38000, 50000, 45000, 55000,
+             40000, 47000, 41000, 48000, 44000, 52000),
+  años_exp = c(2, 5, 3, 8, 6, 10, 4, 7, 3, 9, 5, 8),
+  fecha_ingreso = as.Date(c("2022-01-15", "2019-03-10", "2021-07-01", 
+                           "2015-09-20", "2018-11-05", "2013-04-12",
+                           "2020-02-28", "2017-08-15", "2021-10-03",
+                           "2014-12-01", "2019-06-18", "2016-01-25"))
+)
+
+# Dataset más grande para ejemplos de performance
+set.seed(456)
+ventas <- data.table(
+  id_venta = 1:50000,
+  producto = sample(c("Laptop", "Mouse", "Teclado", "Monitor", "Tablet"), 50000, replace = TRUE),
+  categoria = sample(c("Electrónicos", "Accesorios", "Computadoras"), 50000, replace = TRUE),
+  precio = round(runif(50000, 10, 2000), 2),
+  cantidad = sample(1:10, 50000, replace = TRUE),
+  fecha = sample(seq(as.Date("2020-01-01"), as.Date("2023-12-31"), by = "day"), 50000, replace = TRUE),
+  vendedor_id = sample(1:100, 50000, replace = TRUE),
+  region = sample(c("Norte", "Sur", "Este", "Oeste"), 50000, replace = TRUE)
+)
+```
+
+## La Sintaxis `DT[i, j, by]`: El Corazón de `data.table`
+
+Todo en `data.table` gira alrededor de esta estructura simple pero poderosa. Piensa en ella como una **pregunta en tres partes** que le haces a tus datos:
+
+```{r}
+#| label: estructura-basica
+#| echo: true
+#| eval: false
+
+# La estructura universal
+DT[i,           j,              by]
+   ↓            ↓               ↓
+ ¿Dónde?    ¿Qué hacer?    ¿Agrupado por?
+(filtros)   (seleccionar/   (variables de
+           transformar)      agrupación)
+```
+
+Cada componente es opcional, lo que hace la sintaxis extremadamente flexible.
+
+## El Componente `i`: Selección y Filtrado de Filas
+
+### 1. **Filtrado Básico por Condiciones**
+
+```{r}
+#| label: filtrado-basico
+#| echo: true
+
+# Empleados con salario > 45000
+empleados[salario > 45000]
+```
+
+```{r}
+#| label: filtrado-multiple
+#| echo: true
+
+# Múltiples condiciones: IT con más de 5 años de experiencia
+empleados[departamento == "IT" & años_exp > 5]
+```
+
+```{r}
+#| label: filtrado-avanzado
+#| echo: true
+
+# Usando %in% para múltiples valores
+empleados[departamento %in% c("Ventas", "Marketing")]
+```
+
+### 2. **Filtrado por Posición**
+
+```{r}
+#| label: filtrado-posicion
+#| echo: true
+
+# Primeras 3 filas
+empleados[1:3]
+
+# Última fila usando .N (número total de filas)
+empleados[.N]
+
+# Últimas 3 filas
+empleados[(.N-2):.N]
+```
+
+### 3. **Filtrado por Orden**
+
+```{r}
+#| label: filtrado-orden
+#| echo: true
+
+# Ordenar por salario (ascendente)
+empleados[order(salario)]
+
+# Ordenar por salario descendente
+empleados[order(-salario)]
+
+# Ordenar por múltiples columnas
+empleados[order(departamento, -salario)]
+```
+
+::: {.callout-tip}
+## 💡 Consejo: Filtrado Eficiente
+
+`data.table` optimiza automáticamente muchas operaciones de filtrado. Para datasets enormes, considera usar `setkey()` para acelerar filtros repetitivos (lo veremos en capítulos posteriores).
+:::
+
+## El Componente `j`: El Poder de la Transformación
+
+### 1. **Selección Simple de Columnas**
+
+```{r}
+#| label: seleccion-simple
+#| echo: true
+
+# Seleccionar una columna (devuelve vector)
+empleados[, salario]
+
+# Seleccionar una columna (devolver data.table)
+empleados[, .(salario)]
+
+# Múltiples columnas
+empleados[, .(nombre, salario, departamento)]
+```
+
+### 2. **Creación de Nuevas Columnas**
+
+```{r}
+#| label: columnas-nuevas
+#| echo: true
+
+# Crear columna calculada
+empleados[, .(nombre, salario, salario_anual = salario * 12)]
+
+# Múltiples cálculos
+empleados[, .(
+  nombre,
+  salario_mensual = salario,
+  salario_anual = salario * 12,
+  salario_por_año_exp = round(salario / años_exp, 0)
+)]
+```
+
+### 3. **Funciones de Agregación**
+
+```{r}
+#| label: agregacion-basica
+#| echo: true
+
+# Estadísticas básicas
+empleados[, .(
+  salario_promedio = mean(salario),
+  salario_mediana = median(salario),
+  salario_max = max(salario),
+  salario_min = min(salario),
+  total_empleados = .N
+)]
+```
+
+### 4. **El Símbolo Especial `.N`**
+
+`.N` es una variable especial que representa el número de filas en el grupo actual:
+
+```{r}
+#| label: simbolo-N
+#| echo: true
+
+# Contar total de filas
+empleados[, .N]
+
+# Contar empleados por departamento
+empleados[, .N, by = departamento]
+
+# Usar .N en cálculos
+empleados[, .(
+  empleados_total = .N,
+  salario_promedio = mean(salario)
+)]
+```
+
+## El Componente `by`: Agrupaciones Poderosas
+
+### 1. **Agrupación Simple**
+
+```{r}
+#| label: agrupacion-simple
+#| echo: true
+
+# Estadísticas por departamento
+empleados[, .(
+  empleados = .N,
+  salario_promedio = round(mean(salario), 0),
+  salario_total = sum(salario)
+), by = departamento]
+```
+
+### 2. **Agrupación por Múltiples Variables**
+
+```{r}
+#| label: agrupacion-multiple
+#| echo: true
+
+# Crear categorías de experiencia para el ejemplo
+empleados[, categoria_exp := ifelse(años_exp <= 5, "Junior", "Senior")]
+
+# Agrupar por departamento y categoría de experiencia
+empleados[, .(
+  empleados = .N,
+  salario_promedio = round(mean(salario), 0)
+), by = .(departamento, categoria_exp)]
+```
+
+### 3. **Agrupación con Expresiones**
+
+```{r}
+#| label: agrupacion-expresiones
+#| echo: true
+
+# Agrupar por rangos de salario calculados sobre la marcha
+empleados[, .(
+  empleados = .N,
+  salario_promedio = round(mean(salario), 0)
+), by = .(rango_salario = ifelse(salario > 45000, "Alto", "Medio-Bajo"))]
+```
+
+## Combinando los Tres Componentes
+
+La verdadera potencia surge cuando combinas `i`, `j`, y `by`:
+
+```{r}
+#| label: combinacion-completa
+#| echo: true
+
+# Filtrar empleados con > 4 años exp, calcular stats por departamento
+empleados[años_exp > 4, .(
+  empleados_experimentados = .N,
+  salario_promedio = round(mean(salario), 0),
+  años_exp_promedio = round(mean(años_exp), 1)
+), by = departamento]
+```
+
+## Ejercicios Prácticos
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 1: Dominar la Sintaxis Básica
+
+Usando el dataset `empleados`, resuelve:
+
+1. **Filtrado**: Empleados de "Ventas" o "IT" con salario > 40000
+2. **Agregación**: Por cada departamento, calcula: empleados totales, salario promedio, y años de experiencia máximo
+3. **Combinado**: Encuentra empleados con más años de experiencia que el promedio de su departamento
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 1
+
+```{r}
+#| label: solucion-ejercicio-1
+#| echo: true
+
+# 1. Filtrado avanzado
+empleados_filtrados <- empleados[
+  departamento %in% c("Ventas", "IT") & salario > 40000
+]
+print(empleados_filtrados)
+
+# 2. Agregación por departamento
+stats_dept <- empleados[, .(
+  total_empleados = .N,
+  salario_promedio = round(mean(salario), 0),
+  años_exp_maximo = max(años_exp)
+), by = departamento]
+print(stats_dept)
+
+# 3. Empleados por encima del promedio de experiencia en su departamento
+empleados_promedio_exp <- empleados[, exp_promedio_dept := mean(años_exp), by = departamento][
+  años_exp > exp_promedio_dept, 
+  .(nombre, departamento, años_exp, exp_promedio_dept)
+]
+print(empleados_promedio_exp)
+```
+:::
+
+## Patrones Comunes y Mejores Prácticas
+
+### 1. **Piensa en SQL**
+Si conoces SQL, `data.table` te resultará familiar:
+
+```{r}
+#| label: paralelo-sql
+#| echo: true
+#| eval: false
+
+# SQL: SELECT departamento, AVG(salario) FROM empleados WHERE salario > 40000 GROUP BY departamento
+# data.table:
+empleados[salario > 40000, .(salario_promedio = mean(salario)), by = departamento]
+```
+
+### 2. **Usa `.()` para Múltiples Columnas**
+`.()` es tu amigo para selecciones y cálculos múltiples:
+
+```{r}
+#| label: uso-punto-parentesis
+#| echo: true
+
+# ✅ Correcto: múltiples columnas con nombres descriptivos
+empleados[, .(
+  empleado = nombre,
+  dept = departamento,
+  sueldo = salario,
+  experiencia = años_exp
+)]
+```
+
+### 3. **Combina Operaciones de Forma Legible**
+```{r}
+#| label: operaciones-legibles
+#| echo: true
+
+# Ejemplo complejo pero legible
+analisis_empleados <- empleados[
+  años_exp > 3,                     # i: filtrar por experiencia
+  .(                                # j: calcular métricas
+    empleados = .N,
+    salario_promedio = round(mean(salario), 0),
+    experiencia_total = sum(años_exp),
+    salario_max = max(salario)
+  ),
+  by = departamento                 # by: agrupar por departamento
+][order(-salario_promedio)]         # ordenar por salario desc
+
+print(analisis_empleados)
+```
+
+## Comparación de Performance
+
+Veamos cómo la sintaxis `data.table` se compara con alternativas:
+
+```{r}
+#| label: performance-sintaxis
+#| echo: true
+#| cache: true
+
+# Preparar datos para comparación
+library(microbenchmark)
+ventas_sample <- ventas[sample(.N, 10000)]  # Muestra para benchmark
+
+# Comparar diferentes aproximaciones
+benchmark_sintaxis <- microbenchmark(
+  "data.table" = ventas_sample[precio > 100, .(avg_precio = mean(precio)), by = categoria],
+  "base R" = aggregate(precio ~ categoria, ventas_sample[ventas_sample$precio > 100, ], mean),
+  times = 20
+)
+
+print(benchmark_sintaxis)
+```
+
+## Próximo Capítulo: Símbolos Especiales
+
+En el siguiente capítulo profundizaremos en:
+- **`.SD`**: El subset de datos por grupo
+- **`.SDcols`**: Control granular de columnas
+- **`.I`** y **`.GRP`**: Índices y identificadores de grupo
+- Casos de uso avanzados de estos símbolos
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **`DT[i, j, by]`** es la sintaxis universal - domínala y dominarás `data.table`
+2. **`i`** filtra filas - usa condiciones lógicas, posiciones, u ordenamiento
+3. **`j`** selecciona/calcula - usa `.()` para múltiples columnas con nombres
+4. **`by`** agrupa datos - puede usar múltiples variables o expresiones
+5. **`.N`** cuenta filas - funciona en contexto general o por grupo
+6. **Combina libremente** - la flexibilidad es el superpoder de `data.table`
+:::
+
+Con estos fundamentos sólidos de la sintaxis `DT[i, j, by]`, estás listo para explorar los símbolos especiales que hacen de `data.table` una herramienta verdaderamente poderosa.

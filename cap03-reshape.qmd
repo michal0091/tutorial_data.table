@@ -1,0 +1,928 @@
+# Remodelación de Datos: `melt()` y `dcast()`
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **`melt()`**: Transformar datos de ancho a largo (wide to long)
+- **`dcast()`**: Transformar datos de largo a ancho (long to wide)
+- **Patrones complejos** de reshape con múltiples variables
+- **Agregaciones durante reshape** con funciones personalizadas
+- **Casos de uso reales**: reportes, visualización, y análisis estadístico
+- **Combinación con otras técnicas** de data.table
+:::
+
+```{r}
+#| label: setup-cap03-reshape
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(knitr)
+library(DT)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets para reshape
+set.seed(2024)
+
+# Dataset de ventas en formato ancho (típico de Excel/reportes)
+ventas_trimestral_wide <- data.table(
+  producto = c("Laptop", "Desktop", "Tablet", "Smartphone", "Monitor", 
+              "Teclado", "Mouse", "Impresora", "Router", "Cámara"),
+  categoria = c("Computadoras", "Computadoras", "Computadoras", "Móviles", "Periféricos",
+               "Periféricos", "Periféricos", "Oficina", "Redes", "Multimedia"),
+  precio_unitario = c(1200, 800, 400, 600, 300, 50, 25, 200, 150, 250),
+  Q1_2023_unidades = c(150, 80, 200, 300, 120, 400, 450, 60, 90, 70),
+  Q1_2023_revenue = c(180000, 64000, 80000, 180000, 36000, 20000, 11250, 12000, 13500, 17500),
+  Q2_2023_unidades = c(180, 75, 180, 350, 140, 420, 480, 55, 85, 75),
+  Q2_2023_revenue = c(216000, 60000, 72000, 210000, 42000, 21000, 12000, 11000, 12750, 18750),
+  Q3_2023_unidades = c(200, 90, 160, 320, 160, 380, 500, 70, 100, 85),
+  Q3_2023_revenue = c(240000, 72000, 64000, 192000, 48000, 19000, 12500, 14000, 15000, 21250),
+  Q4_2023_unidades = c(220, 95, 220, 400, 180, 500, 600, 80, 110, 90),
+  Q4_2023_revenue = c(264000, 76000, 88000, 240000, 54000, 25000, 15000, 16000, 16500, 22500),
+  Q1_2024_unidades = c(190, 85, 200, 380, 170, 450, 550, 75, 105, 80),
+  Q1_2024_revenue = c(228000, 68000, 80000, 228000, 51000, 22500, 13750, 15000, 15750, 20000)
+)
+
+# Dataset de empleados con múltiples métricas (típico para análisis HR)
+empleados_metricas <- data.table(
+  empleado_id = paste0("EMP_", sprintf("%03d", 1:20)),
+  nombre = paste0("Empleado_", LETTERS[1:20]),
+  departamento = rep(c("Ventas", "IT", "Marketing", "RRHH"), each = 5),
+  nivel = rep(c("Junior", "Senior", "Lead", "Manager"), times = 5),
+  salario_base = round(runif(20, 35000, 80000), -2),
+  bonus_Q1 = round(runif(20, 0, 8000), 0),
+  bonus_Q2 = round(runif(20, 0, 10000), 0),
+  bonus_Q3 = round(runif(20, 0, 12000), 0),
+  bonus_Q4 = round(runif(20, 0, 15000), 0),
+  evaluacion_Q1 = round(runif(20, 3.0, 5.0), 1),
+  evaluacion_Q2 = round(runif(20, 3.2, 5.0), 1),
+  evaluacion_Q3 = round(runif(20, 3.1, 4.9), 1),
+  evaluacion_Q4 = round(runif(20, 3.3, 5.0), 1),
+  proyectos_Q1 = sample(1:8, 20, replace = TRUE),
+  proyectos_Q2 = sample(1:10, 20, replace = TRUE),
+  proyectos_Q3 = sample(2:9, 20, replace = TRUE),
+  proyectos_Q4 = sample(1:12, 20, replace = TRUE)
+)
+
+# Dataset de sensores IoT con múltiples mediciones
+sensores_multiples <- data.table(
+  timestamp = rep(seq(as.POSIXct("2024-01-01 00:00:00"), 
+                     as.POSIXct("2024-01-07 23:00:00"), by = "6 hours"), 3),
+  ubicacion = rep(c("Planta_Norte", "Planta_Sur", "Planta_Centro"), each = 28),
+  sensor_temp_1 = round(20 + 5*sin(seq(0, 6*pi, length.out = 84)) + rnorm(84, 0, 1), 1),
+  sensor_temp_2 = round(22 + 3*cos(seq(0, 6*pi, length.out = 84)) + rnorm(84, 0, 0.8), 1),
+  sensor_humedad_1 = round(60 + 15*sin(seq(0, 4*pi, length.out = 84)) + rnorm(84, 0, 3), 1),
+  sensor_humedad_2 = round(65 + 10*cos(seq(0, 4*pi, length.out = 84)) + rnorm(84, 0, 2), 1),
+  sensor_presion_1 = round(1013 + 20*sin(seq(0, 3*pi, length.out = 84)) + rnorm(84, 0, 5), 1),
+  sensor_presion_2 = round(1015 + 15*cos(seq(0, 3*pi, length.out = 84)) + rnorm(84, 0, 3), 1)
+)
+
+# Dataset de encuestas (típico formato de cuestionarios)
+encuesta_satisfaccion <- data.table(
+  respuesta_id = 1:100,
+  cliente_id = sample(1:50, 100, replace = TRUE),
+  fecha_encuesta = sample(seq(as.Date("2024-01-01"), as.Date("2024-06-30"), by = "day"), 100),
+  edad = sample(18:70, 100, replace = TRUE),
+  genero = sample(c("M", "F"), 100, replace = TRUE),
+  region = sample(c("Norte", "Sur", "Este", "Oeste"), 100, replace = TRUE),
+  # Preguntas de satisfacción (escala 1-5)
+  satisfaccion_producto = sample(1:5, 100, replace = TRUE, prob = c(0.05, 0.1, 0.2, 0.4, 0.25)),
+  satisfaccion_servicio = sample(1:5, 100, replace = TRUE, prob = c(0.08, 0.12, 0.25, 0.35, 0.2)),
+  satisfaccion_precio = sample(1:5, 100, replace = TRUE, prob = c(0.1, 0.15, 0.3, 0.3, 0.15)),
+  satisfaccion_entrega = sample(1:5, 100, replace = TRUE, prob = c(0.07, 0.13, 0.2, 0.4, 0.2)),
+  # Variables de comportamiento
+  recomendaria = sample(0:1, 100, replace = TRUE, prob = c(0.25, 0.75)),
+  volveria_comprar = sample(0:1, 100, replace = TRUE, prob = c(0.2, 0.8)),
+  gasto_mensual = round(exp(rnorm(100, 5.5, 0.8)), 0)
+)
+```
+
+## Conceptos Fundamentales: Wide vs Long
+
+Antes de explorar `melt()` y `dcast()`, es crucial entender cuándo y por qué transformar estructuras de datos:
+
+- **Formato Wide (ancho)**: Cada variable tiene su propia columna. Fácil de leer pero difícil de analizar estadísticamente.
+- **Formato Long (largo)**: Las observaciones se "apilan" en filas. Ideal para análisis estadístico y visualización.
+
+```{r}
+#| label: conceptos-wide-long
+#| echo: true
+
+# Ejemplo simple: formato wide
+datos_wide_ejemplo <- data.table(
+  estudiante = c("Ana", "Juan", "María"),
+  matematicas = c(85, 90, 78),
+  ciencias = c(88, 85, 92),
+  historia = c(82, 88, 89)
+)
+
+print("Formato WIDE (típico de Excel):")
+print(datos_wide_ejemplo)
+
+# Convertir a formato long
+datos_long_ejemplo <- melt(datos_wide_ejemplo, 
+                          id.vars = "estudiante",
+                          variable.name = "materia", 
+                          value.name = "calificacion")
+
+print("\nFormato LONG (ideal para análisis):")
+print(datos_long_ejemplo)
+```
+
+## `melt()`: De Ancho a Largo
+
+### 1. **`melt()` Básico**
+
+```{r}
+#| label: melt-basico
+#| echo: true
+
+# Transformar datos de ventas trimestrales
+ventas_long <- melt(ventas_trimestral_wide,
+                   id.vars = c("producto", "categoria", "precio_unitario"),
+                   variable.name = "periodo_metrica", 
+                   value.name = "valor")
+
+print("Datos transformados a formato largo:")
+print(head(ventas_long, 12))
+
+# Ver la estructura completa
+cat("Dimensiones originales:", dim(ventas_trimestral_wide), "\n")
+cat("Dimensiones después de melt:", dim(ventas_long), "\n")
+```
+
+### 2. **Separar Variables Complejas**
+
+```{r}
+#| label: melt-separar-variables
+#| echo: true
+
+# Separar periodo y métrica de la variable compuesta
+ventas_long_separada <- ventas_long[, `:=`(
+  periodo = sub("_unidades|_revenue", "", periodo_metrica),
+  metrica = ifelse(grepl("unidades", periodo_metrica), "unidades", "revenue")
+)]
+
+print("Datos con variables separadas:")
+print(head(ventas_long_separada, 12))
+
+# Limpiar columna temporal
+ventas_long_separada[, periodo_metrica := NULL]
+```
+
+### 3. **`melt()` con Patrones**
+
+```{r}
+#| label: melt-patrones
+#| echo: true
+
+# Melt usando patrones para múltiples tipos de variables
+empleados_long <- melt(empleados_metricas,
+                      id.vars = c("empleado_id", "nombre", "departamento", "nivel", "salario_base"),
+                      measure = patterns(
+                        bonus = "^bonus_",
+                        evaluacion = "^evaluacion_", 
+                        proyectos = "^proyectos_"
+                      ),
+                      variable.name = "trimestre",
+                      value.name = c("bonus", "evaluacion", "proyectos"))
+
+# Limpiar nombres de trimestre
+empleados_long[, trimestre := paste0("Q", trimestre)]
+
+print("Empleados con múltiples métricas en formato largo:")
+print(head(empleados_long, 12))
+```
+
+### 4. **`melt()` Avanzado para Sensores**
+
+```{r}
+#| label: melt-sensores-avanzado
+#| echo: true
+
+# Melt complejo para datos de sensores múltiples
+sensores_long <- melt(sensores_multiples,
+                     id.vars = c("timestamp", "ubicacion"),
+                     variable.name = "sensor_completo",
+                     value.name = "medicion")[, `:=`(
+  # Extraer tipo de sensor y número
+  tipo_sensor = sub("_[0-9]+$", "", sensor_completo),
+  numero_sensor = as.numeric(sub(".*_", "", sensor_completo))
+)][, sensor_completo := NULL]  # Limpiar columna temporal
+
+print("Sensores en formato largo:")
+print(head(sensores_long, 15))
+
+# Estadísticas por tipo de sensor
+stats_sensores <- sensores_long[, .(
+  mediciones = .N,
+  promedio = round(mean(medicion, na.rm = TRUE), 2),
+  minimo = round(min(medicion, na.rm = TRUE), 2),
+  maximo = round(max(medicion, na.rm = TRUE), 2),
+  desviacion = round(sd(medicion, na.rm = TRUE), 2)
+), by = .(tipo_sensor, ubicacion)]
+
+print("\nEstadísticas por tipo de sensor y ubicación:")
+print(stats_sensores)
+```
+
+## `dcast()`: De Largo a Ancho
+
+### 1. **`dcast()` Básico**
+
+```{r}
+#| label: dcast-basico
+#| echo: true
+
+# Reconstruir formato ancho desde formato largo
+ventas_reconstruida <- dcast(ventas_long_separada, 
+                            producto + categoria + precio_unitario ~ periodo + metrica,
+                            value.var = "valor")
+
+print("Datos reconstruidos a formato ancho:")
+print(head(ventas_reconstruida))
+
+# Verificar que coincide con datos originales
+cat("¿Reconstrucción exitosa?", 
+    nrow(ventas_reconstruida) == nrow(ventas_trimestral_wide) && 
+    ncol(ventas_reconstruida) >= ncol(ventas_trimestral_wide) - 2, "\n")
+```
+
+### 2. **`dcast()` con Agregación**
+
+```{r}
+#| label: dcast-agregacion
+#| echo: true
+
+# Crear tabla resumen: promedio por producto y año
+ventas_resumen_anual <- ventas_long_separada[, 
+  año := ifelse(grepl("2023", periodo), "2023", "2024")
+][, .(
+  valor_promedio = round(mean(valor), 0)
+), by = .(producto, categoria, año, metrica)]
+
+# Convertir a formato ancho con agregación
+resumen_wide <- dcast(ventas_resumen_anual,
+                     producto + categoria ~ año + metrica,
+                     value.var = "valor_promedio")
+
+print("Resumen anual en formato ancho:")
+print(resumen_wide)
+```
+
+### 3. **`dcast()` con Funciones de Agregación Personalizadas**
+
+```{r}
+#| label: dcast-funciones-personalizadas
+#| echo: true
+
+# Análisis completo de empleados por departamento
+empleados_analisis <- dcast(empleados_long,
+                           departamento + nivel ~ .,
+                           value.var = c("bonus", "evaluacion", "proyectos"),
+                           fun.aggregate = list(
+                             mean = mean,
+                             max = max,
+                             min = min
+                           ))
+
+print("Análisis agregado de empleados:")
+print(empleados_analisis)
+```
+
+### 4. **Tablas de Contingencia con `dcast()`**
+
+```{r}
+#| label: dcast-contingencia
+#| echo: true
+
+# Transformar encuesta a formato largo primero
+encuesta_long <- melt(encuesta_satisfaccion,
+                     id.vars = c("respuesta_id", "cliente_id", "fecha_encuesta", "edad", "genero", "region"),
+                     measure.vars = patterns("^satisfaccion_", "gasto_mensual"),
+                     variable.name = "aspecto_satisfaccion",
+                     value.name = c("puntuacion", "gasto_mensual"))
+
+# Limpiar nombres de aspectos
+encuesta_long[, aspecto := sub("satisfaccion_", "", aspecto_satisfaccion)]
+
+# Crear tabla de contingencia: región vs aspecto (promedio de satisfacción)
+tabla_contingencia <- dcast(encuesta_long,
+                           region ~ aspecto,
+                           value.var = "puntuacion", 
+                           fun.aggregate = mean)
+
+print("Tabla de contingencia: Satisfacción promedio por región y aspecto:")
+print(tabla_contingencia)
+
+# Matriz de correlación usando dcast
+# Primero, crear datos en formato adecuado
+matriz_correlacion_data <- encuesta_long[, .(
+  satisfaccion_promedio = mean(puntuacion)
+), by = .(cliente_id, aspecto)]
+
+matriz_correlacion_wide <- dcast(matriz_correlacion_data,
+                                cliente_id ~ aspecto,
+                                value.var = "satisfaccion_promedio")
+
+# Calcular correlaciones
+cor_matrix <- cor(matriz_correlacion_wide[, -"cliente_id"], use = "complete.obs")
+print("\nMatriz de correlaciones entre aspectos:")
+print(round(cor_matrix, 3))
+```
+
+## Casos de Uso Avanzados
+
+### 1. **Reportes Ejecutivos Dinámicos**
+
+```{r}
+#| label: reportes-ejecutivos
+#| echo: true
+
+# Crear reporte ejecutivo completo combinando melt/dcast
+reporte_ejecutivo <- ventas_long_separada[
+  # Calcular métricas adicionales
+  , `:=`(
+    año = ifelse(grepl("2023", periodo), "2023", "2024"),
+    trimestre_num = as.numeric(substr(periodo, 2, 2))
+  )
+][
+  # Agrupar y calcular KPIs
+  , .(
+    valor_total = sum(valor),
+    productos_activos = uniqueN(producto)
+  ), by = .(categoria, año, metrica)
+]
+
+# Crear formato ancho para reporte
+reporte_ejecutivo <-  dcast(reporte_ejecutivo, categoria ~ año + metrica, value.var = "valor_total")
+
+print("Reporte Ejecutivo de Ventas:")
+print(reporte_ejecutivo)
+
+# Calcular crecimiento año sobre año
+reporte_con_crecimiento <- copy(reporte_ejecutivo)[, `:=`(
+  crecimiento_revenue = round((get("2024_revenue") - get("2023_revenue")) / get("2023_revenue") * 100, 1),
+  crecimiento_unidades = round((get("2024_unidades") - get("2023_unidades")) / get("2023_unidades") * 100, 1)
+)]
+
+print("\nReporte con análisis de crecimiento:")
+print(reporte_con_crecimiento[, .(categoria, 
+                                 revenue_2023 = `2023_revenue`, 
+                                 revenue_2024 = `2024_revenue`,
+                                 crecimiento_revenue,
+                                 crecimiento_unidades)])
+```
+
+### 2. **Dashboard de Sensores en Tiempo Real**
+
+```{r}
+#| label: dashboard-sensores
+#| echo: true
+
+# Crear dashboard de estado actual de sensores
+estado_actual_sensores <- sensores_long[
+  # Obtener última lectura por sensor
+  , .SD[.N], by = .(ubicacion, tipo_sensor, numero_sensor)
+][
+  # Clasificar estado según rangos normales
+  , estado := fcase(
+    tipo_sensor == "sensor_temp" & (medicion < 15 | medicion > 30), "ALERTA",
+    tipo_sensor == "sensor_humedad" & (medicion < 30 | medicion > 80), "ALERTA", 
+    tipo_sensor == "sensor_presion" & (medicion < 1000 | medicion > 1030), "ALERTA",
+    default = "NORMAL"
+  )
+]
+
+# Dashboard en formato ancho
+dashboard_wide <- dcast(estado_actual_sensores,
+                       ubicacion ~ tipo_sensor + numero_sensor,
+                       value.var = "medicion")
+
+print("Dashboard de Sensores (valores actuales):")
+print(dashboard_wide)
+
+# Tabla de alertas
+alertas_sensores <- estado_actual_sensores[estado == "ALERTA"]
+if(nrow(alertas_sensores) > 0) {
+  print("\n🚨 ALERTAS ACTIVAS:")
+  print(alertas_sensores[, .(ubicacion, tipo_sensor, numero_sensor, medicion, timestamp)])
+} else {
+  cat("\n✅ Todos los sensores operan en rangos normales\n")
+}
+```
+
+### 3. **Análisis Multivariable de Encuestas**
+
+```{r}
+#| label: analisis-multivariable-encuestas
+#| echo: true
+
+# Análisis completo de satisfacción por segmentos
+analisis_satisfaccion <- encuesta_long[
+  # Agregar segmentación demográfica
+  , `:=`(
+    grupo_edad = cut(edad, breaks = c(0, 30, 45, 60, 100), 
+                    labels = c("Joven", "Adulto", "Maduro", "Senior")),
+    gasto_categoria = cut(gasto_mensual, breaks = c(0, 100, 300, 500, Inf),
+                         labels = c("Bajo", "Medio", "Alto", "Premium"))
+  )
+][
+  # Calcular satisfacción promedio por segmento y aspecto
+  , .(
+    satisfaccion_promedio = round(mean(puntuacion), 2),
+    respuestas = .N
+  ), by = .(region, grupo_edad, gasto_categoria, aspecto)
+]
+
+# Crear matriz de satisfacción: aspecto vs segmento
+matriz_satisfaccion <- dcast(analisis_satisfaccion,
+                            region + grupo_edad + gasto_categoria ~ aspecto,
+                            value.var = "satisfaccion_promedio",
+                            fun.aggregate = mean)
+
+print("Matriz de satisfacción por segmento:")
+print(head(matriz_satisfaccion, 10))
+
+# Verificar qué columnas se crearon después del dcast
+print("Columnas en matriz_satisfaccion:")
+print(names(matriz_satisfaccion))
+
+# Identificar segmentos críticos (satisfacción baja en múltiples aspectos)
+# Primero verificar qué columnas de aspectos existen
+columnas_aspectos <- names(matriz_satisfaccion)[!names(matriz_satisfaccion) %in% c("region", "grupo_edad", "gasto_categoria")]
+print(paste("Columnas de aspectos encontradas:", paste(columnas_aspectos, collapse = ", ")))
+
+if(length(columnas_aspectos) >= 4) {
+  # Si tenemos las 4 columnas esperadas (entrega, precio, producto, servicio)
+  segmentos_criticos <- matriz_satisfaccion[
+    # Calcular score de satisfacción general usando las columnas que existen
+    , satisfaccion_general := round(rowMeans(.SD, na.rm = TRUE), 2), .SDcols = columnas_aspectos
+  ][
+    satisfaccion_general < 3.5  # Umbral crítico
+  ][order(satisfaccion_general)]
+} else {
+  # Si no tenemos todas las columnas, usar un enfoque más simple
+  cat("No se encontraron todas las columnas de aspectos esperadas. Usando análisis simplificado.\n")
+  segmentos_criticos <- matriz_satisfaccion[1:0]  # Tabla vacía para evitar errores
+}
+
+if(nrow(segmentos_criticos) > 0) {
+  print("\n⚠️ SEGMENTOS CRÍTICOS (satisfacción < 3.5):")
+  print(segmentos_criticos[, .(region, grupo_edad, gasto_categoria, satisfaccion_general)])
+} else {
+  cat("\n✅ No hay segmentos con satisfacción crítica\n")
+}
+```
+
+## Ejercicios Prácticos
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 13: Pipeline Completo de Reshape
+
+Usando los datos de empleados:
+
+1. **`melt()`** para convertir a formato largo
+2. **Agregar nuevas variables** derivadas usando `:=`
+3. **`dcast()`** para crear múltiples vistas agregadas
+4. **Generar reporte ejecutivo** combinando ambas técnicas
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 13
+
+```{r}
+#| label: solucion-ejercicio-13
+#| echo: true
+
+# 1. Pipeline completo de reshape para análisis de empleados
+# Paso 1: melt() para formato largo
+empleados_melted <- melt(empleados_metricas,
+                        id.vars = c("empleado_id", "nombre", "departamento", "nivel", "salario_base"),
+                        measure = patterns(
+                          bonus = "^bonus_Q",
+                          evaluacion = "^evaluacion_Q",
+                          proyectos = "^proyectos_Q"
+                        ),
+                        variable.name = "trimestre_num",
+                        value.name = c("bonus", "evaluacion", "proyectos"))
+
+# 2. Agregar variables derivadas
+empleados_enriquecido <- empleados_melted[, `:=`(
+  trimestre = paste0("Q", trimestre_num),
+  compensacion_total = salario_base / 4 + bonus,  # Salario trimestral + bonus
+  productividad = round(proyectos / (evaluacion + 0.1), 2),  # Proyectos por punto de evaluación
+  categoria_performance = fcase(
+    evaluacion >= 4.5, "Excelente",
+    evaluacion >= 4.0, "Muy Bueno", 
+    evaluacion >= 3.5, "Bueno",
+    evaluacion >= 3.0, "Satisfactorio",
+    default = "Necesita Mejora"
+  ),
+  rango_bonus = fcase(
+    bonus >= 10000, "Alto",
+    bonus >= 5000, "Medio",
+    bonus > 0, "Bajo", 
+    default = "Sin Bonus"
+  )
+)]
+
+# 3. Crear múltiples vistas con dcast()
+
+# Vista 1: Performance promedio por departamento y nivel
+performance_depto <- dcast(empleados_enriquecido,
+                          departamento + nivel ~ .,
+                          value.var = c("evaluacion", "productividad", "compensacion_total"),
+                          fun.aggregate = list(mean = mean, max = max))
+
+cat("📊 VISTA 1: PERFORMANCE POR DEPARTAMENTO Y NIVEL\n")
+print(performance_depto[order(departamento, nivel)])
+
+# Vista 2: Evolución trimestral por empleado (transpuesta)
+evolucion_empleados <- dcast(empleados_enriquecido[departamento == "IT"],  # Solo IT para ejemplo
+                            nombre ~ trimestre,
+                            value.var = "evaluacion",
+                            fun.aggregate = mean)
+
+cat("\n📈 VISTA 2: EVOLUCIÓN DE EVALUACIONES - DEPARTAMENTO IT\n")
+print(evolucion_empleados)
+
+# Vista 3: Matriz de categorías (contingencia)
+matriz_categorias <- dcast(empleados_enriquecido,
+                          departamento ~ categoria_performance,
+                          value.var = "empleado_id",
+                          fun.aggregate = function(x) length(unique(x)))
+
+cat("\n🎯 VISTA 3: MATRIZ DE CATEGORÍAS DE PERFORMANCE\n")
+print(matriz_categorias)
+
+# 4. Reporte ejecutivo combinando técnicas
+cat("\n📋 REPORTE EJECUTIVO DE RRHH\n")
+
+# KPIs generales
+kpis_generales <- empleados_enriquecido[, .(
+  empleados_unicos = uniqueN(empleado_id),
+  evaluacion_promedio = round(mean(evaluacion), 2),
+  bonus_promedio = round(mean(bonus), 0),
+  proyectos_promedio = round(mean(proyectos), 1),
+  compensacion_promedio = round(mean(compensacion_total), 0)
+)]
+
+cat("KPIs GENERALES:\n")
+cat("• Empleados analizados:", kpis_generales$empleados_unicos, "\n")
+cat("• Evaluación promedio:", kpis_generales$evaluacion_promedio, "/5.0\n")
+cat("• Bonus promedio trimestral:", scales::dollar(kpis_generales$bonus_promedio), "\n")
+cat("• Proyectos promedio por trimestre:", kpis_generales$proyectos_promedio, "\n")
+cat("• Compensación total promedio:", scales::dollar(kpis_generales$compensacion_promedio), "\n\n")
+
+# Top performers
+top_performers <- empleados_enriquecido[, .(
+  evaluacion_promedio = round(mean(evaluacion), 2),
+  productividad_promedio = round(mean(productividad), 2),
+  bonus_total = sum(bonus)
+), by = .(empleado_id, nombre, departamento)][
+  order(-evaluacion_promedio, -productividad_promedio)
+][1:5]
+
+cat("🏆 TOP 5 PERFORMERS:\n")
+for(i in 1:nrow(top_performers)) {
+  emp <- top_performers[i]
+  cat(sprintf("%d. %s (%s) - Eval: %.1f, Productividad: %.1f, Bonus Total: %s\n",
+              i, emp$nombre, emp$departamento, emp$evaluacion_promedio, 
+              emp$productividad_promedio, scales::dollar(emp$bonus_total)))
+}
+
+# Análisis por departamento
+analisis_depto <- empleados_enriquecido[, .(
+  empleados = uniqueN(empleado_id),
+  evaluacion_promedio = round(mean(evaluacion), 2),
+  empleados_excelentes = sum(categoria_performance == "Excelente"),
+  tasa_excelencia = round(mean(categoria_performance == "Excelente") * 100, 1),
+  presupuesto_bonus = sum(bonus)
+), by = departamento][order(-tasa_excelencia)]
+
+cat("\n🏢 ANÁLISIS POR DEPARTAMENTO:\n")
+print(analisis_depto)
+
+# Recomendaciones automáticas
+cat("\n💡 RECOMENDACIONES AUTOMÁTICAS:\n")
+
+# Departamento con mejor performance
+mejor_depto <- analisis_depto[1, departamento]
+peor_depto <- analisis_depto[.N, departamento]
+
+cat("• Mejores prácticas de", mejor_depto, "podrían replicarse en otros departamentos\n")
+cat("• Departamento", peor_depto, "requiere plan de mejora en evaluaciones\n")
+
+# Empleados que necesitan atención
+empleados_atencion <- empleados_enriquecido[
+  categoria_performance %in% c("Necesita Mejora", "Satisfactorio"), 
+  uniqueN(empleado_id), 
+  by = departamento
+][V1 > 0]
+
+if(nrow(empleados_atencion) > 0) {
+  cat("• Revisar planes de desarrollo individual en:", paste(empleados_atencion$departamento, collapse = ", "), "\n")
+}
+
+# # Crear tabla interactiva del reporte (comentado para PDF)
+# DT::datatable(
+#   performance_depto,
+#   caption = "Dashboard Ejecutivo de Performance - RRHH",
+#   options = list(pageLength = 10, scrollX = TRUE)
+# ) %>%
+#   DT::formatRound(c("evaluacion_mean", "productividad_mean"), digits = 2) %>%
+#   DT::formatCurrency("compensacion_total_mean", currency = "$")
+```
+:::
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 14: Análisis de Series Temporales con Reshape
+
+1. **Reshape datos de sensores** para análisis temporal
+2. **Crear ventanas móviles** después del reshape
+3. **Detectar anomalías** por tipo de sensor
+4. **Generar reporte de alertas** en formato ejecutivo
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 14
+
+```{r}
+#| label: solucion-ejercicio-14
+#| echo: true
+
+# 1. Análisis temporal completo con reshape
+# Preparar datos base con información temporal
+sensores_temporal <- sensores_long[, `:=`(
+  fecha = as.Date(timestamp),
+  hora = hour(timestamp),
+  dia_semana = wday(timestamp, label = TRUE)
+)]
+
+# 2. Crear ventanas móviles por tipo de sensor
+sensores_con_ventanas <- sensores_temporal[order(ubicacion, tipo_sensor, numero_sensor, timestamp)][, `:=`(
+  # Ventanas móviles de 24 horas (4 mediciones = 24 horas con datos cada 6h)
+  media_24h = frollmean(medicion, 4, na.rm = TRUE),
+  media_48h = frollmean(medicion, 8, na.rm = TRUE),
+  desv_24h = frollapply(medicion, 4, sd, na.rm = TRUE),
+  
+  # Cambios temporales
+  cambio_6h = abs(medicion - shift(medicion, 1)),
+  cambio_24h = abs(medicion - shift(medicion, 4)),
+  
+  # Tendencia
+  tendencia_24h = frollapply(medicion, 4, function(x) {
+    if(length(x) < 4) return(0)
+    lm(x ~ seq_along(x))$coefficients[2]
+  })
+), by = .(ubicacion, tipo_sensor, numero_sensor)]
+
+# 3. Detección de anomalías por tipo de sensor
+sensores_con_anomalias <- sensores_con_ventanas[, `:=`(
+  # Rangos normales específicos por tipo
+  limite_inferior = fcase(
+    tipo_sensor == "sensor_temp", 15,
+    tipo_sensor == "sensor_humedad", 30,
+    tipo_sensor == "sensor_presion", 1000,
+    default = -Inf
+  ),
+  limite_superior = fcase(
+    tipo_sensor == "sensor_temp", 30,
+    tipo_sensor == "sensor_humedad", 80, 
+    tipo_sensor == "sensor_presion", 1030,
+    default = Inf
+  )
+)][, `:=`(
+  # Detectar anomalías
+  anomalia_rango = medicion < limite_inferior | medicion > limite_superior,
+  anomalia_cambio_subito = !is.na(cambio_6h) & cambio_6h > fcase(
+    tipo_sensor == "sensor_temp", 5,
+    tipo_sensor == "sensor_humedad", 15,
+    tipo_sensor == "sensor_presion", 20,
+    default = Inf
+  ),
+  anomalia_desviacion = !is.na(media_24h) & !is.na(desv_24h) & 
+                       abs(medicion - media_24h) > 2 * desv_24h,
+  anomalia_tendencia = !is.na(tendencia_24h) & abs(tendencia_24h) > fcase(
+    tipo_sensor == "sensor_temp", 1,
+    tipo_sensor == "sensor_humedad", 3,
+    tipo_sensor == "sensor_presion", 5,
+    default = Inf
+  )
+)][, `:=`(
+  # Score compuesto de anomalía
+  score_anomalia = (as.numeric(anomalia_rango) * 4) +
+                  (as.numeric(anomalia_cambio_subito) * 3) +
+                  (as.numeric(anomalia_desviacion) * 2) + 
+                  (as.numeric(anomalia_tendencia) * 1),
+  
+  # Clasificación de severidad
+  severidad_anomalia = fcase(
+    (anomalia_rango) * 4 + (anomalia_cambio_subito) * 3 + (anomalia_desviacion) * 2 + (anomalia_tendencia) * 1 >= 6, "CRÍTICA",
+    (anomalia_rango) * 4 + (anomalia_cambio_subito) * 3 + (anomalia_desviacion) * 2 + (anomalia_tendencia) * 1 >= 4, "ALTA",
+    (anomalia_rango) * 4 + (anomalia_cambio_subito) * 3 + (anomalia_desviacion) * 2 + (anomalia_tendencia) * 1 >= 2, "MEDIA",
+    (anomalia_rango) * 4 + (anomalia_cambio_subito) * 3 + (anomalia_desviacion) * 2 + (anomalia_tendencia) * 1 >= 1, "BAJA",
+    default = "NORMAL"
+  )
+)]
+
+# 4. Generar reporte ejecutivo de alertas
+cat("🚨 REPORTE DE ALERTAS - SISTEMA DE SENSORES 🚨\n")
+cat(rep("=", 60), "\n\n")
+
+# Resumen general usando reshape
+resumen_alertas <- sensores_con_anomalias[severidad_anomalia != "NORMAL", .N, 
+                                         by = .(ubicacion, tipo_sensor, severidad_anomalia)]
+
+if(nrow(resumen_alertas) > 0) {
+  # Crear matriz de alertas con dcast
+  matriz_alertas <- dcast(resumen_alertas,
+                         ubicacion + tipo_sensor ~ severidad_anomalia,
+                         value.var = "N",
+                         fill = 0)
+  
+  cat("📊 MATRIZ DE ALERTAS ACTIVAS:\n")
+  print(matriz_alertas)
+} else {
+  cat("✅ No hay alertas activas en el sistema\n")
+}
+
+# Estado actual por sensor (usando reshape)
+estado_actual <- sensores_con_anomalias[, .SD[.N], 
+                                       by = .(ubicacion, tipo_sensor, numero_sensor)][, .(
+  ubicacion, tipo_sensor, numero_sensor, timestamp, medicion, 
+  severidad_anomalia, score_anomalia
+)]
+
+# Convertir a formato wide para dashboard
+dashboard_estado <- dcast(estado_actual,
+                         ubicacion ~ tipo_sensor + numero_sensor,
+                         value.var = "medicion")
+
+cat("\n🏢 ESTADO ACTUAL POR UBICACIÓN:\n")
+print(dashboard_estado)
+
+# Top alertas críticas
+alertas_criticas <- sensores_con_anomalias[
+  severidad_anomalia %in% c("CRÍTICA", "ALTA")
+][order(-score_anomalia, -timestamp)][1:min(10, .N)]
+
+if(nrow(alertas_criticas) > 0) {
+  cat("\n🔥 TOP ALERTAS CRÍTICAS:\n")
+  print(alertas_criticas[, .(
+    Ubicación = ubicacion,
+    Sensor = paste(tipo_sensor, numero_sensor),
+    Timestamp = timestamp,
+    Medición = medicion,
+    Severidad = severidad_anomalia,
+    Score = score_anomalia
+  )])
+}
+
+# Análisis de tendencias por tipo usando melt/dcast
+tendencias_tipo <- sensores_con_anomalias[!is.na(tendencia_24h), .(
+  tendencia_promedio = round(mean(tendencia_24h, na.rm = TRUE), 4),
+  medicion_promedio = round(mean(medicion, na.rm = TRUE), 2),
+  anomalias_total = sum(severidad_anomalia != "NORMAL")
+), by = .(ubicacion, tipo_sensor)]
+
+# Formato wide para comparación
+tendencias_wide <- dcast(tendencias_tipo,
+                        ubicacion ~ tipo_sensor,
+                        value.var = "tendencia_promedio")
+
+cat("\n📈 TENDENCIAS PROMEDIO POR UBICACIÓN (24h):\n")
+print(tendencias_wide)
+
+# Recomendaciones automáticas
+cat("\n💡 RECOMENDACIONES AUTOMÁTICAS:\n")
+
+# Sensores con más anomalías
+sensores_problematicos <- sensores_con_anomalias[, .(
+  anomalias = sum(severidad_anomalia != "NORMAL")
+), by = .(ubicacion, tipo_sensor, numero_sensor)][anomalias > 0][order(-anomalias)]
+
+if(nrow(sensores_problematicos) > 0) {
+  top_problematico <- sensores_problematicos[1]
+  cat("• Revisar sensor", paste(top_problematico$tipo_sensor, top_problematico$numero_sensor), 
+      "en", top_problematico$ubicacion, "con", top_problematico$anomalias, "anomalías\n")
+}
+
+# Ubicación con más problemas
+ubicacion_problemas <- sensores_con_anomalias[, .(
+  anomalias_total = sum(severidad_anomalia != "NORMAL")
+), by = ubicacion][order(-anomalias_total)]
+
+if(nrow(ubicacion_problemas) > 0 && ubicacion_problemas[1, anomalias_total] > 0) {
+  cat("• Priorizar mantenimiento en", ubicacion_problemas[1, ubicacion], 
+      "con", ubicacion_problemas[1, anomalias_total], "anomalías totales\n")
+}
+
+cat("• Siguiente revisión recomendada: en 6 horas\n")
+
+# # Tabla interactiva de alertas críticas (comentado para PDF)
+# if(nrow(alertas_criticas) > 0) {
+#   DT::datatable(
+#     alertas_criticas[, .(ubicacion, tipo_sensor, numero_sensor, timestamp, 
+#                         medicion, severidad_anomalia, score_anomalia)],
+#     caption = "Alertas Críticas del Sistema de Sensores",
+#     options = list(pageLength = 10, scrollX = TRUE)
+#   ) %>%
+#     DT::formatStyle(
+#       "severidad_anomalia",
+#       backgroundColor = DT::styleEqual(
+#         c("CRÍTICA", "ALTA", "MEDIA", "BAJA"),
+#         c("red", "orange", "yellow", "lightblue")
+#       )
+#     ) %>%
+#     DT::formatRound("medicion", digits = 2)
+# }
+```
+:::
+
+## Mejores Prácticas para Reshape
+
+### 1. **Cuándo Usar Cada Técnica**
+
+```{r}
+#| label: mejores-practicas-cuando-usar
+#| echo: true
+#| eval: false
+
+# ✅ Usar melt() cuando:
+# - Necesitas análisis estadístico o visualización con ggplot2
+# - Quieres aplicar funciones por grupos de variables
+# - Los datos vienen de Excel/reportes en formato ancho
+datos_para_analisis <- melt(datos_wide, id.vars = "identificador")
+
+# ✅ Usar dcast() cuando:  
+# - Necesitas crear reportes ejecutivos o dashboards
+# - Quieres matrices de correlación o contingencia
+# - Necesitas format de "tabla dinámica" para presentación
+reporte_ejecutivo <- dcast(datos_long, fila ~ columna, value.var = "valor")
+
+# ✅ Combinar ambos para:
+# - Pipelines de transformación complejos
+# - Análisis que requieren múltiples vistas de los mismos datos
+pipeline_completo <- datos %>% melt(...) %>% 
+  enriquecer(...) %>% dcast(...)
+```
+
+### 2. **Performance y Memoria**
+
+```{r}
+#| label: mejores-practicas-performance
+#| echo: true
+#| eval: false
+
+# ✅ HACER: Especificar measure.vars explícitamente
+melt(dt, measure.vars = c("col1", "col2", "col3"))  # Más rápido
+
+# ❌ EVITAR: Melt sin especificar columnas
+melt(dt)  # Puede incluir columnas no deseadas
+
+# ✅ HACER: Usar patterns() para múltiples tipos de variables  
+melt(dt, measure = patterns("^bonus_", "^eval_"))
+
+# ✅ HACER: Limpiar datos después de reshape
+datos_melted[, columna_temp := NULL]  # Eliminar columnas temporales
+```
+
+### 3. **Manejo de Valores Faltantes**
+
+```{r}
+#| label: mejores-practicas-na
+#| echo: true
+#| eval: false
+
+# ✅ Control de NAs en dcast
+dcast(dt, row ~ col, value.var = "val", fill = 0)  # Llenar con 0
+dcast(dt, row ~ col, value.var = "val", drop = FALSE)  # Mantener combinaciones vacías
+
+# ✅ Manejo de NAs después de melt
+datos_melted[!is.na(value)]  # Filtrar NAs
+datos_melted[, value := nafill(value, fill = 0)]  # Llenar NAs
+```
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **`melt()`** convierte datos anchos a largos - esencial para análisis estadístico y visualización
+2. **`dcast()`** convierte datos largos a anchos - perfecto para reportes y dashboards ejecutivos  
+3. **Patrones complejos** con `patterns()` permiten reshape de múltiples tipos de variables simultáneamente
+4. **Funciones de agregación** en `dcast()` crean resúmenes poderosos durante el reshape
+5. **Combinar ambas técnicas** permite pipelines de transformación muy sofisticados
+6. **Performance**: Especificar columnas explícitamente mejora velocidad y memoria
+:::
+
+<function_calls>
+<invoke name="TodoWrite">
+<parameter name="todos">[{"content": "Reorganizar M\u00f3dulo 1: dividir fundamentos en sintaxis y s\u00edmbolos", "status": "completed", "id": "1"}, {"content": "Crear cap01-simbolos.qmd para s\u00edmbolos especiales del M\u00f3dulo 1", "status": "completed", "id": "1-new"}, {"content": "Reorganizar M\u00f3dulo 2: dividir en encadenamiento y joins", "status": "completed", "id": "2"}, {"content": "Crear cap03-joins-avanzados.qmd para joins avanzados del M\u00f3dulo 3", "status": "completed", "id": "3-1"}, {"content": "Crear cap03-funciones-especiales.qmd para funciones especiales del M\u00f3dulo 3", "status": "completed", "id": "3-2"}, {"content": "Crear cap03-reshape.qmd para reshape del M\u00f3dulo 3", "status": "completed", "id": "3-3"}, {"content": "Reorganizar M\u00f3dulo 4: dividir en performance y buenas pr\u00e1cticas", "status": "in_progress", "id": "4"}, {"content": "Reorganizar M\u00f3dulo 5: dividir en visualizaci\u00f3n y aplicaciones", "status": "pending", "id": "5"}]

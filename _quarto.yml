@@ -1,0 +1,108 @@
+project:
+  type: book
+  output-dir: _book
+
+book:
+  title: "Domina data.table en R"
+  subtitle: "Tutorial completo del paquete más rápido para manipulación de datos"
+  author: "Michal Kinel | Kinelytics"
+  date: today
+  language: es
+  cover-image: images/cover.png
+  favicon: images/favicon.png
+  site-url: https://michal0091.github.io/tutorial_data.table/
+  repo-url: https://github.com/michal0091/tutorial_data.table
+  issue-url: https://github.com/michal0091/tutorial_data.table/issues
+  chapters:
+    - index.qmd
+    - intro.qmd
+    - part: "**Módulo 1**: Fundamentos y Sintaxis Esencial"
+      chapters:
+        - cap01-sintaxis.qmd
+        - cap01-simbolos.qmd
+    - part: "**Módulo 2**: Manipulación de Datos Intermedia"
+      chapters:
+        - cap02-encadenamiento.qmd
+        - cap02-joins.qmd
+    - part: "**Módulo 3**: Técnicas Avanzadas y Funciones Especiales"
+      chapters:
+        - cap03-joins-avanzados.qmd
+        - cap03-funciones-especiales.qmd
+        - cap03-reshape.qmd
+    - part: "**Módulo 4**: Optimización y Buenas Prácticas"
+      chapters:
+        - cap04-performance.qmd
+        - cap04-buenas-practicas.qmd
+    - part: "**Módulo 5**: Integración con el Ecosistema R"
+      chapters:
+        - cap05-visualizacion.qmd
+        - cap05-aplicaciones.qmd
+    - conclusion.qmd
+    - references.qmd
+  
+
+bibliography: references.bib
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+    toc-depth: 3
+    toc-expand: 2
+    number-sections: true
+    number-depth: 3
+    code-fold: false
+    code-tools: 
+      source: true
+      toggle: false
+      caption: "Código"
+    code-copy: hover
+    code-link: true
+    highlight-style: github
+    mainfont: "Source Sans Pro"
+    monofont: "Source Code Pro"
+    fontsize: 1.1em
+    linestretch: 1.7
+    link-external-newwindow: true
+    smooth-scroll: true
+    search: true
+    page-navigation: true
+    back-to-top-navigation: true
+    reader-mode: true
+    
+  pdf:
+    documentclass: scrbook
+    classoption: ["oneside", "open=any"]
+    geometry: 
+      - top=30mm
+      - left=20mm
+      - heightrounded
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    colorlinks: true
+    cite-method: biblatex
+    keep-tex: true
+    prefer-html: true
+
+  epub:
+    cover-image: images/cover.png
+    
+execute:
+  freeze: auto
+  cache: true
+  warning: false
+  message: false
+  echo: true
+  eval: true
+
+knitr:
+  opts_chunk:
+    collapse: true
+    comment: "#>"
+    fig.align: "center"
+    fig.width: 8
+    fig.height: 6
+    out.width: "100%"
+    dpi: 300

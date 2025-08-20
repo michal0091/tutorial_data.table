@@ -1,0 +1,605 @@
+# Manipulación de Datos Intermedia {#sec-manipulacion}
+
+::: {.callout-tip icon="false"}
+## En este capítulo aprenderás
+- **Encadenamiento** de operaciones con `DT[...][...]`
+- **Joins** entre data.tables con `setkey()` y `merge()`
+- **Modificación por referencia** con el operador `:=`
+- **Update joins** y técnicas avanzadas de unión
+- Comparación con `dplyr` y cuándo usar cada herramienta
+:::
+
+```{r}
+#| label: setup-cap02
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(DT)
+library(microbenchmark)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datos de ejemplo expandidos
+set.seed(42)
+
+# Dataset principal: empleados
+empleados <- data.table(
+  emp_id = 1:15,
+  nombre = c("Ana García", "Juan López", "María Rodríguez", "Carlos Martín", 
+            "Lucía Fernández", "Pedro Sánchez", "Isabel Ruiz", "Miguel Torres",
+            "Carmen Jiménez", "Jorge Moreno", "Laura Muñoz", "Diego Álvarez",
+            "Sofía Romero", "Andrés Herrera", "Paula Vega"),
+  departamento_id = sample(1:4, 15, replace = TRUE),
+  salario = sample(30000:65000, 15, replace = TRUE),
+  fecha_ingreso = sample(seq(as.Date("2018-01-01"), as.Date("2023-12-31"), by = "day"), 15),
+  manager_id = c(NA, 1, 1, NA, 4, 4, 1, 7, 8, NA, 10, 10, 4, 13, 14)
+)
+
+# Dataset secundario: departamentos  
+departamentos <- data.table(
+  dept_id = 1:4,
+  nombre_dept = c("Ventas", "Tecnología", "Marketing", "Recursos Humanos"),
+  presupuesto = c(500000, 800000, 300000, 200000),
+  ubicacion = c("Madrid", "Barcelona", "Sevilla", "Valencia")
+)
+
+# Dataset terciario: proyectos
+proyectos <- data.table(
+  proyecto_id = 1:8,
+  nombre_proyecto = c("CRM 2024", "App Móvil", "Campaña Verano", "Sistema RRHH",
+                     "E-commerce", "BI Dashboard", "Social Media", "Automatización"),
+  departamento_id = c(1, 2, 3, 4, 2, 2, 3, 1),
+  presupuesto_proyecto = c(150000, 300000, 80000, 120000, 250000, 180000, 60000, 200000),
+  fecha_inicio = sample(seq(as.Date("2023-01-01"), as.Date("2024-06-01"), by = "month"), 8),
+  estado = sample(c("Planificación", "En Curso", "Completado"), 8, replace = TRUE)
+)
+
+# Dataset más grande para performance
+set.seed(123)
+transacciones <- data.table(
+  trans_id = 1:100000,
+  cliente_id = sample(1:5000, 100000, replace = TRUE),
+  producto_id = sample(1:500, 100000, replace = TRUE),
+  cantidad = sample(1:10, 100000, replace = TRUE),
+  precio_unitario = round(runif(100000, 5, 500), 2),
+  fecha_transaccion = sample(seq(as.Date("2022-01-01"), as.Date("2024-12-31"), by = "day"), 100000, replace = TRUE),
+  vendedor_id = sample(1:50, 100000, replace = TRUE)
+)
+
+clientes <- data.table(
+  cliente_id = 1:5000,
+  nombre_cliente = paste("Cliente", 1:5000),
+  segmento = sample(c("Premium", "Estándar", "Básico"), 5000, replace = TRUE, prob = c(0.2, 0.5, 0.3)),
+  fecha_registro = sample(seq(as.Date("2020-01-01"), as.Date("2024-01-01"), by = "day"), 5000, replace = TRUE)
+)
+```
+
+## Encadenamiento de Operaciones (Chaining)
+
+Una de las características más elegantes de `data.table` es su capacidad de encadenar operaciones usando múltiples corchetes `[...][...]`. Esto permite crear flujos de trabajo complejos de forma legible y eficiente.
+
+### 1. **Concepto Básico del Encadenamiento**
+
+```{r}
+#| label: encadenamiento-basico
+#| echo: true
+
+# Operación en dos pasos separados
+paso1 <- empleados[salario > 40000]
+resultado <- paso1[, .(salario_promedio = mean(salario)), by = departamento_id]
+
+# Lo mismo en una sola línea encadenada
+resultado_encadenado <- empleados[salario > 40000][, .(salario_promedio = mean(salario)), by = departamento_id]
+
+print(resultado_encadenado)
+```
+
+### 2. **Encadenamiento vs. Pipes de `dplyr`**
+
+Comparemos las dos aproximaciones principales para operaciones secuenciales:
+
+::: {.panel-tabset}
+
+## **data.table (Encadenamiento)**
+```{r}
+#| label: dt-chaining
+#| echo: true
+
+# Filtrar → Agrupar → Ordenar → Seleccionar top 3
+resultado_dt <- empleados[salario > 35000][
+  , .(empleados_count = .N, salario_promedio = round(mean(salario), 0)), 
+  by = departamento_id
+][order(-salario_promedio)][1:3]
+
+print(resultado_dt)
+```
+
+## **dplyr (Pipes)**
+```{r}
+#| label: dplyr-pipes
+#| echo: true
+
+# Misma operación con dplyr
+resultado_dplyr <- empleados %>%
+  filter(salario > 35000) %>%
+  group_by(departamento_id) %>%
+  summarise(empleados_count = n(), 
+           salario_promedio = round(mean(salario), 0),
+           .groups = 'drop') %>%
+  arrange(desc(salario_promedio)) %>%
+  slice_head(n = 3)
+
+print(resultado_dplyr)
+```
+
+:::
+
+::: {.callout-note}
+## 🤔 ¿Cuándo usar cada uno?
+
+- **data.table chaining**: Mejor para datasets grandes, operaciones complejas, cuando la velocidad es crítica
+- **dplyr pipes**: Más legible para principiantes, mejor para análisis exploratorio, workflows colaborativos
+:::
+
+### 3. **Encadenamiento Complejo con Referencias**
+
+```{r}
+#| label: encadenamiento-complejo
+#| echo: true
+
+# Análisis complejo: empleados senior por departamento con ratios
+analisis_complejo <- empleados[
+  fecha_ingreso < as.Date("2022-01-01")  # Filtrar empleados con +2 años
+][
+  , antiguedad_años := round(as.numeric(Sys.Date() - fecha_ingreso) / 365, 1)  # Crear columna
+][
+  , .(
+    empleados_senior = .N,
+    salario_promedio = round(mean(salario), 0),
+    antiguedad_promedio = round(mean(antiguedad_años), 1),
+    salario_total = sum(salario)
+  ), 
+  by = departamento_id
+][
+  order(-salario_promedio)
+][
+  , ratio_salario := round(salario_promedio / salario_promedio[1], 2)  # Ratio vs. top dept
+]
+
+print(analisis_complejo)
+```
+
+## Uniones de Datos (Joins)
+
+Los joins son fundamentales para combinar información de múltiples fuentes. `data.table` ofrece múltiples formas de realizar uniones, desde las más simples hasta las más optimizadas.
+
+### 1. **Joins Básicos con `merge()`**
+
+La función `merge()` es la forma más intuitiva de hacer joins:
+
+```{r}
+#| label: merge-basico
+#| echo: true
+
+# Inner join básico
+empleados_con_dept <- merge(empleados, departamentos, 
+                           by.x = "departamento_id", by.y = "dept_id")
+
+print(head(empleados_con_dept[, .(nombre, nombre_dept, salario, ubicacion)]))
+```
+
+```{r}
+#| label: merge-tipos
+#| echo: true
+
+# Diferentes tipos de joins
+left_join <- merge(empleados, departamentos, 
+                  by.x = "departamento_id", by.y = "dept_id", all.x = TRUE)
+
+right_join <- merge(empleados, departamentos, 
+                   by.x = "departamento_id", by.y = "dept_id", all.y = TRUE)
+
+full_join <- merge(empleados, departamentos, 
+                  by.x = "departamento_id", by.y = "dept_id", all = TRUE)
+
+cat("Left join filas:", nrow(left_join), "\n")
+cat("Right join filas:", nrow(right_join), "\n") 
+cat("Full join filas:", nrow(full_join), "\n")
+```
+
+### 2. **Joins Optimizados con `setkey()`**
+
+Para datasets grandes y joins repetitivos, `setkey()` proporciona un rendimiento extraordinario:
+
+```{r}
+#| label: setkey-joins
+#| echo: true
+
+# Hacer copias para no modificar los originales
+emp_copy <- copy(empleados)
+dept_copy <- copy(departamentos)
+
+# Establecer keys (ordena físicamente las tablas)
+setkey(emp_copy, departamento_id)
+setkey(dept_copy, dept_id)
+
+# Join ultra-rápido usando la sintaxis DT1[DT2]
+resultado_key_join <- dept_copy[emp_copy]
+
+print(head(resultado_key_join[, .(nombre, nombre_dept, salario)]))
+```
+
+### 3. **Sintaxis `X[Y, on = .(columns)]`**
+
+Para joins puntuales sin modificar las tablas:
+
+```{r}
+#| label: on-syntax
+#| echo: true
+
+# Join usando 'on' (no requiere keys)
+resultado_on <- empleados[departamentos, on = .(departamento_id = dept_id)]
+
+print(head(resultado_on[, .(nombre, nombre_dept, salario, ubicacion)]))
+```
+
+### 4. **Joins Múltiples Encadenados**
+
+Combinando múltiples tablas en una operación:
+
+```{r}
+#| label: joins-multiples
+#| echo: true
+
+# Unir empleados → departamentos → proyectos en una sola expresión
+analisis_completo <- empleados[
+  departamentos, on = .(departamento_id = dept_id)
+][
+  proyectos, on = .(departamento_id), allow.cartesian = TRUE
+][
+  , .(
+    empleado = nombre,
+    departamento = nombre_dept,
+    proyecto = nombre_proyecto,
+    salario,
+    presupuesto_dept = presupuesto,
+    presupuesto_proyecto
+  )
+][
+  order(departamento, empleado)
+]
+
+print(head(analisis_completo, 10))
+```
+
+## Modificación por Referencia con `:=`
+
+El operador `:=` es lo que hace a `data.table` verdaderamente único. Permite modificar tablas **in-place**, sin crear copias en memoria.
+
+### 1. **Creación y Modificación de Columnas**
+
+```{r}
+#| label: asignacion-basica
+#| echo: true
+
+# Hacer copia para no modificar el original
+emp_ref <- copy(empleados)
+
+# Crear nueva columna
+emp_ref[, salario_anual := salario * 12]
+
+# Crear múltiples columnas
+emp_ref[, `:=`(
+  años_empresa = round(as.numeric(Sys.Date() - fecha_ingreso) / 365, 1),
+  categoria_salario = ifelse(salario > 45000, "Alto", "Medio")
+)]
+
+print(head(emp_ref[, .(nombre, salario, salario_anual, años_empresa, categoria_salario)]))
+```
+
+### 2. **Modificación Condicional**
+
+```{r}
+#| label: modificacion-condicional
+#| echo: true
+
+# Modificar solo filas que cumplen condición
+emp_ref[salario < 40000, ajuste_salario := salario * 1.1]
+emp_ref[is.na(ajuste_salario), ajuste_salario := salario]
+
+print(head(emp_ref[, .(nombre, salario, ajuste_salario)]))
+```
+
+### 3. **Eliminación de Columnas**
+
+```{r}
+#| label: eliminar-columnas
+#| echo: true
+
+# Eliminar una columna
+emp_ref[, ajuste_salario := NULL]
+
+# Eliminar múltiples columnas
+emp_ref[, c("salario_anual", "años_empresa") := NULL]
+
+print(names(emp_ref))
+```
+
+### 4. **Modificación por Grupos**
+
+```{r}
+#| label: modificacion-grupos
+#| echo: true
+
+# Crear ranking de salario dentro de cada departamento
+emp_ref[, ranking_salario := rank(-salario), by = departamento_id]
+
+# Crear columna con estadística del grupo
+emp_ref[, salario_vs_promedio_dept := salario - mean(salario), by = departamento_id]
+
+print(emp_ref[order(departamento_id, -salario), .(nombre, departamento_id, salario, ranking_salario, salario_vs_promedio_dept)])
+```
+
+## Update Joins: La Característica Estrella
+
+Los **update joins** permiten actualizar una tabla basándose en valores de otra tabla. Es una operación extremadamente poderosa y eficiente.
+
+### 1. **Update Join Básico**
+
+```{r}
+#| label: update-join-basico
+#| echo: true
+
+# Crear tabla de bonificaciones
+bonificaciones <- data.table(
+  dept_id = 1:4,
+  bonus_porcentaje = c(0.15, 0.20, 0.12, 0.18)
+)
+
+# Update join: agregar bonus basado en departamento
+emp_ref[bonificaciones, on = .(departamento_id = dept_id), 
+        bonus := salario * i.bonus_porcentaje]
+
+print(head(emp_ref[, .(nombre, departamento_id, salario, bonus)]))
+```
+
+### 2. **Update Join con Múltiples Columnas**
+
+```{r}
+#| label: update-join-multiple
+#| echo: true
+
+# Información adicional de departamentos
+info_dept <- data.table(
+  dept_id = 1:4,
+  jefe_nombre = c("Ana Silva", "Carlos Tech", "María Creative", "Luis People"),
+  codigo_dept = c("VNT", "TEC", "MKT", "RRH")
+)
+
+# Actualizar múltiples columnas
+emp_ref[info_dept, on = .(departamento_id = dept_id), 
+        `:=`(jefe = i.jefe_nombre, codigo = i.codigo_dept)]
+
+print(head(emp_ref[, .(nombre, codigo, jefe)]))
+```
+
+## Ejercicios Prácticos Avanzados
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 4: Pipeline de Análisis Completo
+
+Usando los datasets `transacciones` y `clientes`:
+
+1. **Filtrar** transacciones del último año (2024)
+2. **Unir** con información de clientes
+3. **Calcular** ventas totales por segmento de cliente
+4. **Crear** columna con % de ventas sobre el total
+5. **Ordenar** por ventas descendente y **mostrar** top 3 segmentos
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 4
+
+```{r}
+#| label: solucion-ejercicio-4
+#| echo: true
+
+# Pipeline completo encadenado
+resultado_pipeline <- transacciones[
+  year(fecha_transaccion) == 2024  # 1. Filtrar 2024
+][
+  clientes, on = .(cliente_id)     # 2. Join con clientes
+][
+  , .(ventas_totales = sum(cantidad * precio_unitario)), by = segmento  # 3. Calcular ventas
+][
+  , porcentaje := round(ventas_totales / sum(ventas_totales) * 100, 1)  # 4. % sobre total
+][
+  order(-ventas_totales)           # 5. Ordenar desc
+][
+  1:3                             # Top 3
+]
+
+print(resultado_pipeline)
+```
+:::
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 5: Update Join Complejo
+
+1. **Crear** una tabla `performance_dept` con métricas por departamento
+2. **Usar update join** para agregar estas métricas a los empleados
+3. **Calcular** el salario de cada empleado como % del total del departamento
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 5
+
+```{r}
+#| label: solucion-ejercicio-5
+#| echo: true
+
+# 1. Crear tabla de performance por departamento
+performance_dept <- empleados[, .(
+  empleados_total = .N,
+  salario_total_dept = sum(salario),
+  salario_promedio_dept = round(mean(salario), 0),
+  salario_max_dept = max(salario)
+), by = departamento_id]
+
+print(performance_dept)
+
+# 2. Update join para agregar métricas
+emp_final <- copy(empleados)
+emp_final[performance_dept, on = .(departamento_id), 
+         `:=`(
+           empleados_dept = i.empleados_total,
+           salario_total_dept = i.salario_total_dept,
+           salario_prom_dept = i.salario_promedio_dept
+         )]
+
+# 3. Calcular porcentaje individual del total departamental
+emp_final[, porcentaje_del_dept := round(salario / salario_total_dept * 100, 1)]
+
+print(emp_final[order(departamento_id, -salario), 
+               .(nombre, departamento_id, salario, salario_prom_dept, porcentaje_del_dept)])
+```
+:::
+
+## Comparación de Performance: Joins
+
+Veamos cómo se comportan diferentes métodos de join con datos grandes:
+
+```{r}
+#| label: benchmark-joins
+#| echo: true
+#| cache: true
+
+# Crear datasets de tamaño mediano para benchmark
+set.seed(999)
+tabla_a <- data.table(
+  id = sample(1:10000, 50000, replace = TRUE),
+  valor_a = rnorm(50000)
+)
+
+tabla_b <- data.table(
+  id = 1:10000,
+  valor_b = rnorm(10000)
+)
+
+# Preparar copias para diferentes métodos
+tabla_a_key <- copy(tabla_a)
+tabla_b_key <- copy(tabla_b)
+setkey(tabla_a_key, id)
+setkey(tabla_b_key, id)
+
+# Benchmark de diferentes métodos de join
+benchmark_joins <- microbenchmark(
+  "merge()" = merge(tabla_a, tabla_b, by = "id"),
+  "X[Y, on=]" = tabla_a[tabla_b, on = .(id)],
+  "setkey + X[Y]" = tabla_b_key[tabla_a_key],
+  times = 10
+)
+
+print(benchmark_joins)
+```
+
+## Mejores Prácticas para Manipulación Intermedia
+
+### 1. **Cuándo usar encadenamiento vs. pasos separados**
+
+```{r}
+#| label: best-practices-chaining
+#| echo: true
+#| eval: false
+
+# ✅ Bueno: Encadenamiento legible
+resultado <- dt[filtro_simple][, cálculo_simple, by = grupo][order(-valor)]
+
+# ❌ Evitar: Encadenamiento muy complejo
+resultado <- dt[filtro1 & filtro2 & filtro3][
+  , .(col1 = func1(x), col2 = func2(y), col3 = func3(z)), 
+  by = .(grupo1, grupo2, grupo3)
+][
+  order(-col1, col2, -col3)
+][
+  , ratio := col1/sum(col1)
+][
+  ratio > 0.05
+]
+
+# ✅ Mejor: Pasos separados para lógica compleja
+dt_filtrado <- dt[filtro1 & filtro2 & filtro3]
+dt_calculado <- dt_filtrado[, .(col1 = func1(x), col2 = func2(y), col3 = func3(z)), 
+                           by = .(grupo1, grupo2, grupo3)]
+resultado <- dt_calculado[order(-col1, col2, -col3)][, ratio := col1/sum(col1)][ratio > 0.05]
+```
+
+### 2. **Gestión de memoria con `:=`**
+
+```{r}
+#| label: best-practices-memory
+#| echo: true
+#| eval: false
+
+# ✅ Bueno: Modificar por referencia
+dt[, nueva_col := cálculo_complejo(otras_cols)]
+
+# ❌ Evitar: Crear copias innecesarias  
+dt <- dt[, .(todas_las_cols, nueva_col = cálculo_complejo(otras_cols))]
+
+# ✅ Bueno: Usar copy() cuando necesites preservar original
+dt_modificado <- copy(dt)[, nueva_col := cálculo()]
+
+# ❌ Peligroso: No saber que se modificó el original
+dt2 <- dt
+dt2[, nueva_col := 123]  # ¡Esto también modificó dt!
+```
+
+### 3. **Optimización de joins**
+
+```{r}
+#| label: best-practices-joins
+#| echo: true
+#| eval: false
+
+# ✅ Para joins únicos: usar on=
+resultado <- X[Y, on = .(key)]
+
+# ✅ Para joins repetitivos: usar setkey
+setkey(X, key)
+setkey(Y, key)
+resultado <- Y[X]
+
+# ✅ Para datasets enormes: considerar índices
+setindex(X, key)
+resultado <- X[Y, on = .(key)]
+```
+
+## Próximo Capítulo: Técnicas Avanzadas
+
+En el siguiente capítulo exploraremos:
+- **Símbolos especiales avanzados** (`.SD`, `.SDcols`, `.I`, `.GRP`)
+- **Non-equi joins** y **rolling joins**
+- **Reshape de datos** con `melt()` y `dcast()`
+- **Funciones de ventana** y análisis temporal
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **Encadenamiento** hace el código más conciso y eficiente que múltiples asignaciones
+2. **`:=`** es el superpoder de `data.table` - úsalo para modificar sin crear copias
+3. **Setkey()** acelera dramáticamente joins repetitivos en datos grandes  
+4. **Update joins** con `:=` permiten modificar tablas basándose en otras tablas
+5. **La sintaxis es consistente** - los mismos patrones se aplican a operaciones simples y complejas
+:::
+
+Has dominado las técnicas fundamentales e intermedias de `data.table`. En el próximo capítulo, exploraremos las características más avanzadas que hacen de `data.table` una herramienta verdaderamente poderosa para análisis de datos sofisticados.

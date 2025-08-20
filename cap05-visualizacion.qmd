@@ -1,0 +1,852 @@
+# Visualización de Datos con data.table {#sec-visualizacion}
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **Integración perfecta con `ggplot2`** para gráficos estáticos
+- **Gráficos interactivos** con `plotly` y `DT`
+- **Workflows optimizados** data.table → visualización
+- **Dashboards dinámicos** con tablas interactivas
+- **Técnicas avanzadas** de presentación de datos
+:::
+
+```{r}
+#| label: setup-cap05-viz
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(scales)
+library(RColorBrewer)
+library(viridis)
+library(knitr)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets para visualización
+set.seed(2024)
+
+# Dataset de ventas para ejemplos visuales
+producto_temp <- sample(c("Laptop", "Tablet", "Smartphone", "Smartwatch", "Audífonos"), 730, replace = TRUE)
+
+ventas_detalladas <- data.table(
+  fecha = seq(as.Date("2023-01-01"), as.Date("2024-12-31"), by = "day"),
+  producto = producto_temp,
+  categoria = c("Laptop" = "Computadoras", "Tablet" = "Computadoras", 
+               "Smartphone" = "Móviles", "Smartwatch" = "Wearables", 
+               "Audífonos" = "Audio")[producto_temp],
+  region = sample(c("Norte", "Sur", "Este", "Oeste", "Centro"), 730, replace = TRUE),
+  vendedor = sample(paste0("Vendedor_", LETTERS[1:10]), 730, replace = TRUE),
+  precio = round(ifelse(producto_temp == "Laptop", runif(730, 800, 2000),
+                ifelse(producto_temp == "Tablet", runif(730, 300, 800),
+                ifelse(producto_temp == "Smartphone", runif(730, 200, 1200),
+                ifelse(producto_temp == "Smartwatch", runif(730, 150, 500),
+                       runif(730, 50, 300))))), 2),
+  cantidad = sample(1:5, 730, replace = TRUE, prob = c(0.4, 0.3, 0.15, 0.1, 0.05)),
+  descuento = round(runif(730, 0, 0.2), 3),
+  satisfaccion_cliente = sample(1:5, 730, replace = TRUE, prob = c(0.05, 0.1, 0.2, 0.35, 0.3))
+)
+
+# Cargar lubridate para funciones de fecha
+library(lubridate)
+
+# Calcular métricas derivadas
+ventas_detalladas[, `:=`(
+  precio_final = precio * (1 - descuento),
+  revenue = precio * cantidad * (1 - descuento),
+  mes = month(fecha),
+  trimestre = quarter(fecha),
+  año = year(fecha),
+  dia_semana = wday(fecha, label = TRUE),
+  es_fin_semana = wday(fecha) %in% c(1, 7)
+)]
+
+# Dataset de métricas empresariales
+metricas_empresa <- data.table(
+  departamento = rep(c("Ventas", "Marketing", "Desarrollo", "Soporte", "RRHH"), each = 12),
+  mes = rep(1:12, 5),
+  presupuesto = c(
+    runif(12, 80000, 120000),   # Ventas
+    runif(12, 40000, 60000),    # Marketing
+    runif(12, 100000, 150000),  # Desarrollo
+    runif(12, 30000, 50000),    # Soporte
+    runif(12, 25000, 40000)     # RRHH
+  ),
+  kpi_primario = c(
+    rnorm(12, 85, 10),  # % de target de ventas
+    rnorm(12, 15, 3),   # CTR % marketing
+    rnorm(12, 92, 5),   # % uptime desarrollo
+    rnorm(12, 4.2, 0.8),  # Rating soporte
+    rnorm(12, 78, 8)    # % satisfacción RRHH
+  )
+)
+
+metricas_empresa[, gasto_real := presupuesto * runif(60, 0.7, 1.1)]
+
+
+metricas_empresa[, `:=`(
+  variacion_presupuesto = ((gasto_real - presupuesto) / presupuesto) * 100,
+  mes_nombre = month.name[mes],
+  eficiencia = kpi_primario / (gasto_real / 1000)
+)]
+
+# Dataset temporal granular para series de tiempo
+library(lubridate)
+datos_temporales <- data.table(
+  timestamp = seq(as.POSIXct("2024-01-01 00:00:00"),
+                  by = "hour", length.out = 2160),
+  server = sample(paste0("SRV-", sprintf("%03d", 1:50)), 2160, replace = TRUE),
+  cpu_usage = pmax(5, pmin(95, rnorm(2160, 35, 15))),
+  memory_usage = pmax(10, pmin(90, rnorm(2160, 45, 20))),
+  response_time = pmax(50, rexp(2160, 1/200) + 100),
+  error_count = rpois(2160, 0.5)
+)
+
+datos_temporales[, `:=`(
+  fecha = as.Date(timestamp),
+  hora = hour(timestamp),
+  dia_semana = wday(timestamp, label = TRUE),
+  load_score = (cpu_usage * 0.4 + memory_usage * 0.4 + pmin(response_time/10, 50) * 0.2)
+)]
+datos_temporales[, es_horario_laboral := hora %between% c(8, 18) & !wday(timestamp) %in% c(1, 7)]
+```
+
+## Integración con ggplot2: Gráficos Estáticos Profesionales
+
+### 1. **El Workflow Fundamental: data.table → ggplot2**
+
+La filosofía es clara: hacer toda la manipulación pesada de datos con `data.table` y pasar el resultado final limpio a `ggplot2`.
+
+```{r}
+#| label: workflow-basico
+#| echo: true
+#| fig-width: 12
+#| fig-height: 6
+
+# PASO 1: Preparación con data.table (rápido y eficiente)
+ventas_mensuales <- ventas_detalladas[,
+  .(
+    revenue_total = sum(revenue),
+    unidades_vendidas = sum(cantidad),
+    ticket_promedio = round(mean(revenue), 2),
+    num_transacciones = .N,
+    satisfaccion_media = round(mean(satisfaccion_cliente), 2)
+  ),
+  by = .(año, mes)
+][, `:=`(
+  fecha_mes = as.Date(paste(año, mes, "01", sep = "-")),
+  crecimiento = (revenue_total / data.table::shift(revenue_total, 1) - 1) * 100
+)]
+
+# PASO 2: Visualización con ggplot2 (hermoso y profesional)
+p1 <- ggplot(ventas_mensuales, aes(x = fecha_mes, y = revenue_total)) +
+  geom_line(color = "#2E8B57", size = 1.3, alpha = 0.8) +
+  geom_point(color = "#2E8B57", size = 3, alpha = 0.9) +
+  geom_smooth(method = "loess", se = TRUE, color = "#FF6B35", alpha = 0.3) +
+  scale_y_continuous(
+    labels = dollar_format(prefix = "$", suffix = "K", scale = 1e-3),
+    expand = expansion(mult = c(0.02, 0.1))
+  ) +
+  scale_x_date(
+    date_labels = "%b %Y", 
+    date_breaks = "3 months",
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  labs(
+    title = "Evolución del Revenue Mensual",
+    subtitle = "Tendencia de ventas con línea de regresión suavizada",
+    x = NULL,
+    y = "Revenue Total",
+    caption = "Datos procesados con data.table | Visualización: ggplot2"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(color = "#2E8B57", size = 16, face = "bold", hjust = 0),
+    plot.subtitle = element_text(color = "gray40", size = 12, hjust = 0),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    plot.caption = element_text(color = "gray50", size = 9)
+  )
+
+print(p1)
+```
+
+### 2. **Gráficos Multidimensionales Avanzados**
+
+```{r}
+#| label: graficos-multidimensionales
+#| echo: true
+#| fig-width: 14
+#| fig-height: 10
+
+# Análisis complejo con múltiples dimensiones
+analisis_completo <- ventas_detalladas[,
+  .(
+    revenue_total = sum(revenue),
+    margen_promedio = round(mean(1 - descuento), 3),
+    satisfaccion_media = round(mean(satisfaccion_cliente), 2),
+    variacion_precios = sd(precio_final) / mean(precio_final),
+    dias_activos = uniqueN(fecha)
+  ),
+  by = .(region, producto, año)
+][, `:=`(
+  revenue_per_dia = revenue_total / dias_activos,
+  categoria_revenue = cut(revenue_total, 
+                         breaks = quantile(revenue_total, c(0, 0.33, 0.66, 1)),
+                         labels = c("Bajo", "Medio", "Alto"),
+                         include.lowest = TRUE)
+)]
+
+# Gráfico de burbujas multivariable
+p2 <- ggplot(analisis_completo, 
+             aes(x = margen_promedio, y = satisfaccion_media)) +
+  geom_point(aes(size = revenue_total, color = region, shape = factor(año)), 
+             alpha = 0.7, stroke = 1) +
+  geom_text(aes(label = producto), 
+            vjust = -1.2, hjust = 0.5, size = 2.5, color = "gray30") +
+  scale_size_continuous(
+    name = "Revenue Total", 
+    labels = dollar_format(prefix = "$", suffix = "K", scale = 1e-3),
+    range = c(3, 15),
+    guide = guide_legend(override.aes = list(alpha = 1))
+  ) +
+  scale_color_brewer(
+    name = "Región", 
+    type = "qual", 
+    palette = "Set2"
+  ) +
+  scale_shape_manual(
+    name = "Año",
+    values = c(16, 17),
+    guide = guide_legend(override.aes = list(size = 5))
+  ) +
+  scale_x_continuous(
+    labels = percent_format(),
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+  labs(
+    title = "Análisis Multidimensional: Performance por Región y Producto",
+    subtitle = "Margen vs Satisfacción vs Revenue | Tamaño = Revenue, Color = Región, Forma = Año",
+    x = "Margen Promedio",
+    y = "Satisfacción Media del Cliente",
+    caption = "Cada punto representa una combinación región-producto-año"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(color = "#2E8B57", size = 15, face = "bold"),
+    plot.subtitle = element_text(color = "gray40", size = 11),
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    panel.grid.minor = element_blank()
+  ) +
+  guides(
+    color = guide_legend(title.position = "top", title.hjust = 0.5),
+    size = guide_legend(title.position = "top", title.hjust = 0.5),
+    shape = guide_legend(title.position = "top", title.hjust = 0.5)
+  )
+
+print(p2)
+```
+
+### 3. **Series Temporales con Múltiples Métricas**
+
+```{r}
+#| label: series-temporales
+#| echo: true
+#| fig-width: 14
+#| fig-height: 8
+
+# Preparar datos para series temporales múltiples
+series_temporales <- datos_temporales[,
+  .(
+    cpu_promedio = round(mean(cpu_usage), 1),
+    memory_promedio = round(mean(memory_usage), 1),
+    response_time_p95 = round(quantile(response_time, 0.95), 0),
+    error_total = sum(error_count),
+    load_promedio = round(mean(load_score), 1)
+  ),
+  by = .(fecha, hora)
+][, timestamp := as.POSIXct(paste(fecha, sprintf("%02d:00:00", hora)))]
+
+# Transformar a formato largo para ggplot
+series_largo <- melt(series_temporales, 
+                    id.vars = c("timestamp", "fecha", "hora"),
+                    measure.vars = c("cpu_promedio", "memory_promedio", "load_promedio"),
+                    variable.name = "metrica",
+                    value.name = "valor")
+
+# Mapear nombres más descriptivos
+series_largo[, metrica_clean := fcase(
+  metrica == "cpu_promedio", "CPU Usage (%)",
+  metrica == "memory_promedio", "Memory Usage (%)",
+  metrica == "load_promedio", "Load Score",
+  default = as.character(metrica)
+)]
+
+# Gráfico de series temporales múltiples
+p3 <- ggplot(series_largo[fecha >= as.Date("2024-01-01") & fecha <= as.Date("2024-01-07")], 
+             aes(x = timestamp, y = valor, color = metrica_clean)) +
+  geom_line(size = 0.8, alpha = 0.8) +
+  geom_smooth(method = "loess", se = FALSE, size = 1.2, alpha = 0.9) +
+  scale_color_viridis_d(name = "Métrica", option = "plasma", end = 0.8) +
+  scale_x_datetime(
+    date_labels = "%d %b\n%H:%M",
+    date_breaks = "12 hours"
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.02, 0.1))
+  ) +
+  labs(
+    title = "Monitoreo de Sistema - Primera Semana de Enero 2024",
+    subtitle = "Tendencias de CPU, Memoria y Load Score con líneas de regresión suavizada",
+    x = "Timestamp",
+    y = "Valor",
+    caption = "Datos agregados por hora | Líneas suavizadas con método LOESS"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(color = "#2E8B57", size = 14, face = "bold"),
+    plot.subtitle = element_text(color = "gray40", size = 11),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom",
+    panel.grid.minor.x = element_blank(),
+    strip.text = element_text(size = 10, face = "bold")
+  ) +
+  facet_wrap(~ metrica_clean, scales = "free_y", ncol = 1)
+
+print(p3)
+```
+
+### 4. **Heatmaps y Visualizaciones de Correlación**
+
+```{r}
+#| label: heatmaps
+#| echo: true
+#| fig-width: 12
+#| fig-height: 8
+
+# Preparar matriz de correlación usando data.table
+correlacion_por_region <- ventas_detalladas[,
+  .(
+    precio_promedio = mean(precio_final),
+    revenue_promedio = mean(revenue),
+    satisfaccion_promedio = mean(satisfaccion_cliente),
+    descuento_promedio = mean(descuento),
+    cantidad_promedio = mean(cantidad)
+  ),
+  by = .(region, producto)
+]
+
+# Crear heatmap de performance por región-producto
+heatmap_data <- correlacion_por_region[, .(
+  region, producto,
+  revenue_normalizado = scale(revenue_promedio)[,1],
+  satisfaccion_normalizada = scale(satisfaccion_promedio)[,1],
+  eficiencia = (scale(revenue_promedio)[,1] + scale(satisfaccion_promedio)[,1]) / 2
+)]
+
+p4 <- ggplot(heatmap_data, aes(x = region, y = producto, fill = eficiencia)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = round(eficiencia, 2)), 
+            color = ifelse(heatmap_data$eficiencia > 0, "white", "black"),
+            size = 3.5, fontface = "bold") +
+  scale_fill_gradient2(
+    name = "Índice de\nEficiencia",
+    low = "#d73027", mid = "#f7f7f7", high = "#1a9850",
+    midpoint = 0,
+    guide = guide_colorbar(title.position = "top", title.hjust = 0.5)
+  ) +
+  labs(
+    title = "Mapa de Calor: Eficiencia por Región y Producto",
+    subtitle = "Índice combinado de Revenue y Satisfacción del Cliente (valores estandarizados)",
+    x = "Región",
+    y = "Producto",
+    caption = "Verde = Alta eficiencia, Rojo = Baja eficiencia"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(color = "#2E8B57", size = 14, face = "bold"),
+    plot.subtitle = element_text(color = "gray40", size = 11),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 10),
+    legend.position = "right",
+    panel.grid = element_blank()
+  )
+
+print(p4)
+```
+
+## Gráficos Interactivos con Plotly
+
+### 1. **Conversión de ggplot2 a Plotly**
+
+```{r}
+#| label: plotly-conversion
+#| echo: true
+#| eval: false
+
+# Crear gráfico base con ggplot2
+datos_interactivos <- ventas_detalladas[,
+  .(
+    revenue_diario = sum(revenue),
+    unidades = sum(cantidad),
+    transacciones = .N,
+    satisfaccion_avg = round(mean(satisfaccion_cliente), 2),
+    productos_unicos = uniqueN(producto)
+  ),
+  by = .(fecha, region)
+]
+
+# Gráfico base para conversión
+grafico_base <- ggplot(datos_interactivos[fecha >= as.Date("2024-01-01") & fecha <= as.Date("2024-03-31")], 
+                       aes(x = fecha, y = revenue_diario, color = region)) +
+  geom_line(alpha = 0.8, size = 1) +
+  geom_point(aes(size = transacciones, 
+                text = paste("Fecha:", fecha,
+                           "<br>Región:", region,
+                           "<br>Revenue:", scales::dollar(revenue_diario),
+                           "<br>Transacciones:", transacciones,
+                           "<br>Satisfacción:", satisfaccion_avg)),
+             alpha = 0.7) +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scale_size_continuous(range = c(2, 8)) +
+  labs(
+    title = "Revenue Diario por Región (Interactivo)",
+    x = "Fecha",
+    y = "Revenue Diario",
+    color = "Región",
+    size = "Transacciones"
+  ) +
+  theme_minimal() %>% suppressWarnings()
+
+# Convertir a plotly
+if(requireNamespace("plotly", quietly = TRUE)) {
+  grafico_interactivo <- plotly::ggplotly(grafico_base, tooltip = "text") %>%
+    plotly::layout(
+      title = list(text = "Revenue Diario por Región<br><sub>Hover para detalles | Click en leyenda para filtrar</sub>"),
+      hovermode = "closest"
+    )
+  
+  grafico_interactivo
+} else {
+  grafico_base
+  cat("💡 Instala 'plotly' para ver la versión interactiva: install.packages('plotly')\n")
+}
+```
+
+### 2. **Gráficos 3D y Superficies**
+
+```{r}
+#| label: plotly-3d
+#| echo: true
+#| eval: false
+
+if(requireNamespace("plotly", quietly = TRUE)) {
+  # Preparar datos para superficie 3D
+  superficie_data <- ventas_detalladas[año == 2024,
+    .(
+      revenue_total = sum(revenue),
+      satisfaccion_media = mean(satisfaccion_cliente),
+      margen_promedio = mean(1 - descuento)
+    ),
+    by = .(mes, region)
+  ]
+  
+  # Crear matriz para la superficie
+  matriz_revenue <- dcast(superficie_data, mes ~ region, value.var = "revenue_total", fill = 0)
+  matriz_vals <- as.matrix(matriz_revenue[, -1])
+  
+  # Gráfico 3D
+  p3d <- plotly::plot_ly(
+    z = matriz_vals,
+    x = colnames(matriz_vals),
+    y = matriz_revenue$mes,
+    type = "surface",
+    colorscale = "Viridis"
+  ) %>%
+    plotly::layout(
+      title = "Superficie 3D: Revenue por Mes y Región",
+      scene = list(
+        xaxis = list(title = "Región"),
+        yaxis = list(title = "Mes"),
+        zaxis = list(title = "Revenue")
+      )
+    )
+  
+  p3d
+} else {
+  cat("💡 Instala 'plotly' para ver gráficos 3D interactivos\n")
+}
+```
+
+## Tablas Interactivas con DT
+
+### 1. **Dashboard de Datos con DT**
+
+```{r}
+#| label: dt-dashboard
+#| echo: true
+#| eval: false
+
+# Preparar datos comprehensivos para tabla
+tabla_comprehensiva <- ventas_detalladas[,
+  .(
+    Revenue_Total = round(sum(revenue), 2),
+    Unidades_Vendidas = sum(cantidad),
+    Num_Transacciones = .N,
+    Ticket_Promedio = round(mean(revenue), 2),
+    Satisfaccion_Media = round(mean(satisfaccion_cliente), 2),
+    Descuento_Promedio = round(mean(descuento) * 100, 1),
+    Precio_Promedio = round(mean(precio_final), 2),
+    Revenue_por_Transaccion = round(sum(revenue) / .N, 2)
+  ),
+  by = .(Región = region, Producto = producto, Año = año)
+][, `:=`(
+  Ranking_Revenue = frank(-Revenue_Total),
+  Eficiencia = round((Satisfaccion_Media * Revenue_Total) / 1000, 2)
+)][order(-Revenue_Total)]
+
+# Crear tabla interactiva avanzada
+tabla_interactiva <- DT::datatable(
+  tabla_comprehensiva,
+  caption = "Dashboard Interactivo de Ventas - Análisis Completo",
+  options = list(
+    pageLength = 15,
+    scrollX = TRUE,
+    scrollY = "400px",
+    dom = 'Bfrtip',
+    buttons = list(
+      list(extend = 'copy', text = 'Copiar'),
+      list(extend = 'csv', text = 'Descargar CSV'),
+      list(extend = 'excel', text = 'Descargar Excel'),
+      list(extend = 'pdf', text = 'Descargar PDF')
+    ),
+    columnDefs = list(
+      list(className = 'dt-center', targets = c(3, 4, 5, 6, 7, 8, 9, 10)),
+      list(width = '100px', targets = c(0, 1, 2))
+    ),
+    initComplete = DT::JS(
+      "function(settings, json) {",
+      "$(this.api().table().header()).css({'background-color': '#2E8B57', 'color': '#fff'});",
+      "}"
+    )
+  ),
+  extensions = c('Buttons', 'Scroller'),
+  rownames = FALSE,
+  class = 'cell-border stripe hover'
+) %>%
+  DT::formatCurrency(c("Revenue_Total", "Ticket_Promedio", "Precio_Promedio", "Revenue_por_Transaccion"), 
+                     currency = "$", digits = 2) %>%
+  DT::formatRound(c("Satisfaccion_Media", "Eficiencia"), digits = 2) %>%
+  DT::formatPercentage("Descuento_Promedio", digits = 1) %>%
+  DT::formatStyle(
+    "Eficiencia",
+    background = DT::styleColorBar(range(tabla_comprehensiva$Eficiencia), "#4CAF50"),
+    backgroundSize = "100% 90%",
+    backgroundRepeat = "no-repeat",
+    backgroundPosition = "center"
+  ) %>%
+  DT::formatStyle(
+    "Satisfaccion_Media",
+    backgroundColor = DT::styleInterval(
+      cuts = c(3, 4),
+      values = c("#ffebee", "#e8f5e8", "#c8e6c9")
+    )
+  ) %>%
+  DT::formatStyle(
+    "Ranking_Revenue",
+    color = DT::styleInterval(
+      cuts = c(5, 10),
+      values = c("#d32f2f", "#ff9800", "#4caf50")
+    ),
+    fontWeight = "bold"
+  )
+
+tabla_interactiva
+```
+
+### 2. **Tablas con Gráficos Embebidos (Sparklines)**
+
+```{r}
+#| label: dt-sparklines
+#| echo: true
+#| eval: false
+
+# Preparar datos para sparklines (tendencias mensuales)
+tendencias_mensuales <- ventas_detalladas[,
+  .(revenue_mensual = sum(revenue)),
+  by = .(region, producto, año, mes)
+][order(region, producto, año, mes)]
+
+# Crear sparklines para cada combinación región-producto
+sparkline_data <- tendencias_mensuales[,
+  .(
+    Revenue_Total = sum(revenue_mensual),
+    Meses_Activos = .N,
+    Revenue_Promedio = round(mean(revenue_mensual), 2),
+    Tendencia = list(revenue_mensual),
+    Max_Mes = max(revenue_mensual),
+    Min_Mes = min(revenue_mensual)
+  ),
+  by = .(Región = region, Producto = producto)
+][order(-Revenue_Total)]
+
+# Crear función para sparklines
+crear_sparkline <- function(values) {
+  paste0('<span class="sparkline">', paste(values, collapse = ','), '</span>')
+}
+
+# Aplicar sparklines
+sparkline_data[, Tendencia_Visual := sapply(Tendencia, crear_sparkline)]
+
+# Tabla con sparklines
+tabla_sparklines <- DT::datatable(
+  sparkline_data[, .(Región, Producto, Revenue_Total, Revenue_Promedio, 
+                    Max_Mes, Min_Mes, Tendencia_Visual)],
+  caption = "Análisis de Tendencias con Sparklines",
+  options = list(
+    pageLength = 10,
+    scrollX = TRUE,
+    columnDefs = list(
+      list(className = 'dt-center', targets = c(2, 3, 4, 5, 6))
+    ),
+    fnDrawCallback = DT::JS(
+      'function(){
+        $(".sparkline").sparkline("html", {
+          type: "line",
+          width: "100px",
+          height: "30px",
+          lineColor: "#2E8B57",
+          fillColor: "#e8f5e8",
+          spotColor: "#FF6B35",
+          minSpotColor: "#FF6B35",
+          maxSpotColor: "#FF6B35"
+        });
+      }'
+    )
+  ),
+  escape = FALSE,
+  rownames = FALSE
+) %>%
+  DT::formatCurrency(c("Revenue_Total", "Revenue_Promedio", "Max_Mes", "Min_Mes"), 
+                     currency = "$", digits = 0)
+
+# Note: Para que las sparklines funcionen completamente, se necesita incluir la librería jQuery Sparklines
+cat("💡 Para sparklines completas, incluye: <script src='https://cdn.jsdelivr.net/gh/garethflowers/jquery-sparkline/jquery.sparkline.min.js'></script>\n")
+
+tabla_sparklines
+```
+
+## Dashboards Integrados: Combinando Todo
+
+### 1. **Dashboard Ejecutivo Completo**
+
+```{r}
+#| label: dashboard-ejecutivo
+#| echo: true
+#| fig-width: 16
+#| fig-height: 12
+
+# Preparar datos para dashboard ejecutivo
+resumen_ejecutivo <- ventas_detalladas[,
+  .(
+    revenue_total = sum(revenue),
+    unidades_total = sum(cantidad),
+    transacciones_total = .N,
+    satisfaccion_promedio = round(mean(satisfaccion_cliente), 2)
+  )
+]
+
+kpis_por_region <- ventas_detalladas[,
+  .(
+    Revenue = sum(revenue),
+    Unidades = sum(cantidad),
+    Transacciones = .N,
+    Satisfacción = round(mean(satisfaccion_cliente), 2),
+    Ticket_Promedio = round(mean(revenue), 2)
+  ),
+  by = region
+][order(-Revenue)]
+
+tendencia_mensual <- ventas_detalladas[,
+  .(revenue = sum(revenue)),
+  by = .(año, mes)
+][, fecha := as.Date(paste(año, mes, "01", sep = "-"))]
+
+top_productos <- ventas_detalladas[,
+  .(revenue = sum(revenue), satisfaccion = round(mean(satisfaccion_cliente), 2)),
+  by = producto
+][order(-revenue)]
+
+# Layout del dashboard usando grid.arrange
+library(gridExtra)
+
+# Gráfico 1: KPIs por región
+g1 <- ggplot(kpis_por_region, aes(x = reorder(region, Revenue), y = Revenue)) +
+  geom_col(fill = "#2E8B57", alpha = 0.8) +
+  geom_text(aes(label = scales::dollar(Revenue, scale = 1e-3, suffix = "K")), 
+            hjust = -0.1, color = "#2E8B57", fontface = "bold") +
+  coord_flip() +
+  labs(title = "Revenue por Región", x = NULL, y = "Revenue") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", color = "#2E8B57"))
+
+# Gráfico 2: Tendencia temporal
+g2 <- ggplot(tendencia_mensual, aes(x = fecha, y = revenue)) +
+  geom_line(color = "#2E8B57", size = 1.2) +
+  geom_point(color = "#2E8B57", size = 2) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1e-3, suffix = "K")) +
+  labs(title = "Tendencia Mensual", x = NULL, y = "Revenue") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", color = "#2E8B57"))
+
+# Gráfico 3: Top productos
+g3 <- ggplot(top_productos, aes(x = reorder(producto, revenue), y = revenue)) +
+  geom_col(fill = "#FF6B35", alpha = 0.8) +
+  coord_flip() +
+  labs(title = "Top Productos", x = NULL, y = "Revenue") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", color = "#FF6B35"))
+
+# Gráfico 4: Satisfacción vs Revenue
+g4 <- ggplot(top_productos, aes(x = satisfaccion, y = revenue)) +
+  geom_point(size = 4, color = "#8E44AD", alpha = 0.7) +
+  geom_text(aes(label = producto), vjust = -0.5, size = 3) +
+  labs(title = "Satisfacción vs Revenue", x = "Satisfacción", y = "Revenue") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", color = "#8E44AD"))
+
+# Combinar todos los gráficos
+grid.arrange(
+  g1, g2, g3, g4,
+  ncol = 2, nrow = 2,
+  top = grid::textGrob("DASHBOARD EJECUTIVO DE VENTAS", 
+                      gp = grid::gpar(fontsize = 20, fontface = "bold", col = "#2E8B57"))
+)
+
+# Mostrar métricas clave
+cat("\n📊 MÉTRICAS CLAVE DEL PERÍODO:\n")
+cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+cat("💰 Revenue Total:", scales::dollar(resumen_ejecutivo$revenue_total), "\n")
+cat("📦 Unidades Vendidas:", scales::comma(resumen_ejecutivo$unidades_total), "\n")
+cat("🛒 Total Transacciones:", scales::comma(resumen_ejecutivo$transacciones_total), "\n")
+cat("⭐ Satisfacción Promedio:", resumen_ejecutivo$satisfaccion_promedio, "/5\n")
+cat("🎯 Ticket Promedio:", scales::dollar(resumen_ejecutivo$revenue_total / resumen_ejecutivo$transacciones_total), "\n")
+```
+
+### 2. **Tabla de Métricas Interactiva Final**
+
+```{r}
+#| label: tabla-metricas-final
+#| echo: true
+#| eval: false
+
+# Crear tabla final con todas las métricas
+metricas_finales <- ventas_detalladas[,
+  .(
+    Revenue = round(sum(revenue), 2),
+    Unidades = sum(cantidad),
+    Transacciones = .N,
+    Días_Activos = uniqueN(fecha),
+    Satisfacción = round(mean(satisfaccion_cliente), 2),
+    Descuento_Avg = round(mean(descuento) * 100, 1),
+    Revenue_per_Día = round(sum(revenue) / uniqueN(fecha), 2)
+  ),
+  by = .(Región = region, Producto = producto, Año = año)
+][, `:=`(
+  Performance_Score = round((Revenue / 1000) * Satisfacción * (1 - Descuento_Avg/100), 2),
+  Ranking = frank(-Revenue, ties.method = "min")
+)][order(-Performance_Score)]
+
+# Tabla final con formato avanzado
+tabla_final <- DT::datatable(
+  metricas_finales,
+  caption = "MÉTRICAS INTEGRALES DE PERFORMANCE | Dashboard Interactivo Final",
+  options = list(
+    pageLength = 20,
+    scrollX = TRUE,
+    scrollY = "500px",
+    dom = 'Bfrtip',
+    buttons = list(
+      list(extend = 'copy', text = '📋 Copiar'),
+      list(extend = 'csv', text = '📊 CSV'),
+      list(extend = 'excel', text = '📈 Excel'),
+      list(extend = 'print', text = '🖨️ Imprimir')
+    ),
+    columnDefs = list(
+      list(className = 'dt-center', targets = c(3:10)),
+      list(orderSequence = c('desc', 'asc'), targets = c(3, 9, 10))
+    ),
+    initComplete = DT::JS(
+      "function(settings, json) {",
+      "$(this.api().table().header()).css({",
+      "'background': 'linear-gradient(90deg, #2E8B57, #3CB371)',",
+      "'color': '#fff',",
+      "'text-align': 'center',",
+      "'font-weight': 'bold'",
+      "});",
+      "}"
+    )
+  ),
+  extensions = c('Buttons', 'Scroller'),
+  rownames = FALSE,
+  class = 'cell-border stripe hover compact'
+) %>%
+  DT::formatCurrency(c("Revenue", "Revenue_per_Día"), currency = "$", digits = 0) %>%
+  DT::formatRound(c("Satisfacción", "Performance_Score"), digits = 2) %>%
+  DT::formatPercentage("Descuento_Avg", digits = 1) %>%
+  DT::formatStyle(
+    "Performance_Score",
+    background = DT::styleColorBar(range(metricas_finales$Performance_Score), "#2E8B57"),
+    backgroundSize = "100% 90%",
+    backgroundRepeat = "no-repeat",
+    backgroundPosition = "center",
+    color = "white",
+    fontWeight = "bold"
+  ) %>%
+  DT::formatStyle(
+    "Ranking",
+    backgroundColor = DT::styleInterval(
+      cuts = c(3, 7, 15),
+      values = c("#FFD700", "#C0C0C0", "#CD7F32", "#f5f5f5")  # Oro, Plata, Bronce, Normal
+    ),
+    fontWeight = "bold",
+    textAlign = "center"
+  ) %>%
+  DT::formatStyle(
+    "Satisfacción",
+    color = DT::styleInterval(
+      cuts = c(3.5, 4.5),
+      values = c("#e74c3c", "#f39c12", "#27ae60")
+    ),
+    fontWeight = "bold"
+  )
+
+tabla_final
+```
+
+## Próximo Capítulo: Aplicaciones del Mundo Real
+
+En el siguiente capítulo exploraremos:
+- **Aplicaciones Shiny** para dashboards dinámicos
+- **Integración con tidymodels** para machine learning
+- **Conexión con bases de datos** y herramientas Big Data
+- **Casos de uso industriales** reales
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **data.table + ggplot2** = Combinación perfecta para análisis visual profesional
+2. **Plotly** añade interactividad sin sacrificar la estética de ggplot2
+3. **DT** transforma tablas estáticas en dashboards interactivos potentes
+4. **El workflow óptimo**: Procesar con data.table → Visualizar con ggplot2/plotly/DT
+5. **Sparklines y formato avanzado** elevan las tablas a herramientas de análisis
+6. **Los dashboards integrados** combinan múltiples visualizaciones para insights completos
+:::
+
+Has dominado la visualización de datos con `data.table`. En el próximo capítulo veremos cómo construir aplicaciones completas del mundo real.

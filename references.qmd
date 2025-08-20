@@ -1,0 +1,47 @@
+# Referencias {.unnumbered}
+
+Este tutorial se basa en la documentación oficial de `data.table`, artículos de la comunidad, y años de experiencia práctica con la herramienta. A continuación se presentan las referencias clave consultadas.
+
+## Referencias Académicas y Técnicas
+
+::: {#refs}
+:::
+
+## Enlaces Útiles Adicionales
+
+### **Documentación Oficial**
+- **data.table en CRAN**: [https://cran.r-project.org/package=data.table](https://cran.r-project.org/package=data.table)
+- **Viñetas del paquete**: Ejecuta `browseVignettes("data.table")` en R
+- **Ayuda integrada**: `?data.table`, `?setkey`, `?merge.data.table` en R
+
+### **Comunidad y Soporte**
+- **Stack Overflow**: [Preguntas etiquetadas con data.table](https://stackoverflow.com/questions/tagged/data.table)
+- **GitHub del proyecto**: [https://github.com/Rdatatable/data.table](https://github.com/Rdatatable/data.table)
+- **Reddit r/rstats**: Comunidad activa de usuarios de R
+
+### **Recursos de Aprendizaje**
+- **R for Data Science**: [https://r4ds.hadley.nz/](https://r4ds.hadley.nz/)
+- **Advanced R**: [https://adv-r.hadley.nz/](https://adv-r.hadley.nz/)
+- **R-bloggers**: [https://www.r-bloggers.com/](https://www.r-bloggers.com/)
+
+### **Comparaciones y Benchmarks**
+- **Vincent Arel-Bundock**: Comparaciones detalladas de performance
+- **H2O.ai benchmarks**: [https://h2oai.github.io/db-benchmark/](https://h2oai.github.io/db-benchmark/)
+- **The Raft blog**: Artículos técnicos de la comunidad data.table
+
+### **Datasets para Práctica**
+- **NYC Open Data**: [https://opendata.cityofnewyork.us/](https://opendata.cityofnewyork.us/)
+- **Kaggle Datasets**: [https://www.kaggle.com/datasets](https://www.kaggle.com/datasets)
+- **UCI ML Repository**: [https://archive.ics.uci.edu/ml/index.php](https://archive.ics.uci.edu/ml/index.php)
+
+---
+
+::: {.callout-note}
+## Nota sobre las Referencias
+
+Este tutorial está diseñado para ser un recurso educativo comprehensivo. Las técnicas y ejemplos presentados están basados en las mejores prácticas de la comunidad `data.table` y han sido verificados contra la documentación oficial más reciente.
+
+Para mantenerte actualizado con los cambios en `data.table`, recomendamos seguir el [repositorio oficial en GitHub](https://github.com/Rdatatable/data.table) y las [notas de nuevas versiones](https://github.com/Rdatatable/data.table/blob/master/NEWS.md).
+:::
+
+---

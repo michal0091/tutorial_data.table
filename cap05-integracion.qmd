@@ -1,0 +1,865 @@
+# Integración con el Ecosistema R {#sec-integracion}
+
+::: {.callout-tip icon="false"}
+## En este capítulo aprenderás
+- **Integración con `ggplot2`** para visualización profesional
+- **Workflows con `shiny`** para aplicaciones interactivas
+- **Interoperabilidad con `tidymodels`** para machine learning
+- **Conexión con bases de datos** y herramientas Big Data
+- **El paquete `dtplyr`**: sintaxis dplyr + velocidad data.table
+:::
+
+```{r}
+#| label: setup-cap05
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(knitr)
+
+# Paquetes adicionales para ejemplos (cargar condicionalmente)
+if(requireNamespace("shiny", quietly = TRUE)) library(shiny)
+if(requireNamespace("dtplyr", quietly = TRUE)) library(dtplyr)
+if(requireNamespace("tidymodels", quietly = TRUE)) library(tidymodels)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets para integración
+set.seed(2024)
+
+# Dataset de ventas para visualización
+# Crear producto primero, luego usar para otras variables
+producto_temp <- sample(c("Laptop", "Tablet", "Smartphone", "Smartwatch", "Audífonos"), 730, replace = TRUE)
+
+ventas_detalladas <- data.table(
+  fecha = seq(as.Date("2023-01-01"), as.Date("2024-12-31"), by = "day"),
+  producto = producto_temp,
+  categoria = c("Laptop" = "Computadoras", "Tablet" = "Computadoras", 
+               "Smartphone" = "Móviles", "Smartwatch" = "Wearables", 
+               "Audífonos" = "Audio")[producto_temp],
+  region = sample(c("Norte", "Sur", "Este", "Oeste", "Centro"), 730, replace = TRUE),
+  vendedor = sample(paste0("Vendedor_", LETTERS[1:10]), 730, replace = TRUE),
+  precio = round(ifelse(producto_temp == "Laptop", runif(730, 800, 2000),
+                ifelse(producto_temp == "Tablet", runif(730, 300, 800),
+                ifelse(producto_temp == "Smartphone", runif(730, 200, 1200),
+                ifelse(producto_temp == "Smartwatch", runif(730, 150, 500),
+                       runif(730, 50, 300))))), 2),
+  cantidad = sample(1:5, 730, replace = TRUE, prob = c(0.4, 0.3, 0.15, 0.1, 0.05)),
+  descuento = round(runif(730, 0, 0.2), 3),
+  satisfaccion_cliente = sample(1:5, 730, replace = TRUE, prob = c(0.05, 0.1, 0.2, 0.35, 0.3))
+)
+
+# Cargar lubridate para funciones de fecha
+library(lubridate)
+
+# Calcular métricas derivadas
+ventas_detalladas[, `:=`(
+  precio_final = precio * (1 - descuento),
+  revenue = precio * cantidad * (1 - descuento),
+  mes = month(fecha),
+  trimestre = quarter(fecha),
+  año = year(fecha),
+  dia_semana = wday(fecha, label = TRUE),
+  es_fin_semana = wday(fecha) %in% c(1, 7)
+)]
+
+# Dataset para machine learning
+datos_clientes <- data.table(
+  cliente_id = 1:1000,
+  edad = round(rnorm(1000, 35, 12)),
+  ingresos = round(exp(rnorm(1000, 10.5, 0.5))),
+  antiguedad_meses = sample(1:60, 1000, replace = TRUE),
+  num_productos = sample(1:8, 1000, replace = TRUE, prob = c(0.3, 0.25, 0.2, 0.1, 0.08, 0.04, 0.02, 0.01)),
+  region = sample(c("Norte", "Sur", "Este", "Oeste", "Centro"), 1000, replace = TRUE),
+  canal_preferido = sample(c("Online", "Tienda", "Teléfono"), 1000, replace = TRUE, prob = c(0.5, 0.35, 0.15)),
+  satisfaccion = round(runif(1000, 1, 5), 1),
+  churn_flag = rbinom(1000, 1, 0.15)  # 15% de churn
+)
+
+# Variables predictoras para el modelo
+datos_clientes[, `:=`(
+  valor_cliente = ingresos * antiguedad_meses * num_productos / 1000,
+  engagement_score = pmin(10, (num_productos * 2 + antiguedad_meses / 6 + satisfaccion)),
+  categoria_edad = cut(edad, breaks = c(0, 25, 35, 50, 100), labels = c("Joven", "Adulto_Joven", "Adulto", "Senior"))
+)]
+```
+
+## Integración con `ggplot2`: Visualización de Datos
+
+`ggplot2` trabaja perfectamente con `data.table`. La clave es hacer toda la manipulación de datos pesada con `data.table` y pasar el resultado final a `ggplot()`.
+
+### 1. **Workflow Básico: data.table → ggplot2**
+
+```{r}
+#| label: ggplot-basico
+#| echo: true
+#| fig-width: 10
+#| fig-height: 6
+
+# Análisis de ventas por mes usando data.table
+ventas_mensuales <- ventas_detalladas[,
+  .(
+    revenue_total = sum(revenue),
+    unidades_vendidas = sum(cantidad),
+    ticket_promedio = round(mean(revenue), 2),
+    num_transacciones = .N
+  ),
+  by = .(año, mes)
+][, fecha_mes := as.Date(paste(año, mes, "01", sep = "-"))]
+
+# Visualización directa con ggplot2
+grafico_ventas <- ggplot(ventas_mensuales, aes(x = fecha_mes, y = revenue_total)) +
+  geom_line(color = "#2E8B57", size = 1.2) +
+  geom_point(color = "#2E8B57", size = 2) +
+  scale_y_continuous(labels = scales::comma_format(prefix = "$")) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "3 months") +
+  labs(
+    title = "Evolución del Revenue Mensual",
+    subtitle = "Análisis de tendencia de ventas 2023-2024",
+    x = "Fecha",
+    y = "Revenue Total",
+    caption = "Procesado con data.table"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(color = "#2E8B57", size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(grafico_ventas)
+```
+
+### 2. **Análisis Multidimensional**
+
+```{r}
+#| label: ggplot-multidimensional
+#| echo: true
+#| fig-width: 12
+#| fig-height: 8
+
+# Análisis complejo por región y producto
+analisis_region_producto <- ventas_detalladas[,
+  .(
+    revenue_total = sum(revenue),
+    margen_promedio = round(mean(1 - descuento), 3),
+    satisfaccion_media = round(mean(satisfaccion_cliente), 2)
+  ),
+  by = .(region, producto)
+][order(-revenue_total)]
+
+# Gráfico de burbujas multivariable
+grafico_burbujas <- ggplot(analisis_region_producto, 
+                          aes(x = margen_promedio, y = satisfaccion_media)) +
+  geom_point(aes(size = revenue_total, color = region), alpha = 0.7) +
+  geom_text(aes(label = producto), vjust = -0.5, size = 3) +
+  scale_size_continuous(name = "Revenue", labels = scales::comma_format(prefix = "$")) +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  labs(
+    title = "Análisis de Performance: Margen vs Satisfacción vs Revenue",
+    subtitle = "Tamaño de burbuja = Revenue total por región y producto",
+    x = "Margen Promedio",
+    y = "Satisfacción Media del Cliente",
+    color = "Región"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(color = "#2E8B57", size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+print(grafico_burbujas)
+```
+
+### 3. **Gráficos Interactivos con Plotly**
+
+```{r}
+#| label: plotly-interactivo
+#| echo: true
+
+# Preparar datos para gráfico interactivo
+datos_plotly <- ventas_detalladas[,
+  .(
+    revenue_diario = sum(revenue),
+    unidades = sum(cantidad),
+    transacciones = .N,
+    satisfaccion_avg = round(mean(satisfaccion_cliente), 2)
+  ),
+  by = .(fecha, producto)
+]
+
+# Crear gráfico base
+grafico_base <- ggplot(datos_plotly, aes(x = fecha, y = revenue_diario, color = producto)) +
+  geom_line(alpha = 0.7) +
+  labs(
+    title = "Revenue Diario por Producto (Interactivo)",
+    x = "Fecha",
+    y = "Revenue Diario",
+    color = "Producto"
+  ) +
+  theme_minimal()
+
+# Convertir a plotly para interactividad
+if(requireNamespace("plotly", quietly = TRUE)) {
+  grafico_interactivo <- plotly::ggplotly(grafico_base, tooltip = c("x", "y", "colour"))
+  print(grafico_interactivo)
+} else {
+  print(grafico_base)
+  cat("Instala 'plotly' para ver la versión interactiva\n")
+}
+```
+
+## Aplicaciones Shiny: Dashboards Dinámicos
+
+`data.table` es ideal para aplicaciones Shiny porque las operaciones reactivas son ultra-rápidas.
+
+### 1. **Estructura de App Shiny con data.table**
+
+```{r}
+#| label: shiny-estructura
+#| echo: true
+#| eval: false
+
+library(shiny)
+library(data.table)
+library(DT)
+library(ggplot2)
+
+# UI
+ui <- fluidPage(
+  titlePanel("Dashboard de Ventas - Powered by data.table"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("region_filter", "Región:",
+                 choices = c("Todas", unique(ventas_detalladas$region)),
+                 selected = "Todas"),
+      
+      dateRangeInput("fecha_range", "Rango de Fechas:",
+                    start = min(ventas_detalladas$fecha),
+                    end = max(ventas_detalladas$fecha)),
+      
+      checkboxGroupInput("productos", "Productos:",
+                        choices = unique(ventas_detalladas$producto),
+                        selected = unique(ventas_detalladas$producto))
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Dashboard", 
+                fluidRow(
+                  column(6, plotOutput("grafico_temporal")),
+                  column(6, plotOutput("grafico_productos"))
+                ),
+                fluidRow(
+                  column(12, DT::dataTableOutput("tabla_resumen"))
+                )
+        ),
+        tabPanel("Datos Detallados", 
+                DT::dataTableOutput("tabla_detallada"))
+      )
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  
+  # Datos reactivos - aquí es donde data.table brilla
+  datos_filtrados <- reactive({
+    dt <- ventas_detalladas[
+      fecha >= input$fecha_range[1] & fecha <= input$fecha_range[2] &
+      producto %in% input$productos
+    ]
+    
+    if(input$region_filter != "Todas") {
+      dt <- dt[region == input$region_filter]
+    }
+    
+    return(dt)
+  })
+  
+  # Gráfico temporal
+  output$grafico_temporal <- renderPlot({
+    datos_agregados <- datos_filtrados()[,
+      .(revenue_diario = sum(revenue)), 
+      by = fecha
+    ]
+    
+    ggplot(datos_agregados, aes(x = fecha, y = revenue_diario)) +
+      geom_line(color = "#2E8B57", size = 1) +
+      labs(title = "Revenue Diario", x = "Fecha", y = "Revenue") +
+      theme_minimal()
+  })
+  
+  # Gráfico de productos
+  output$grafico_productos <- renderPlot({
+    productos_top <- datos_filtrados()[,
+      .(revenue_total = sum(revenue)), 
+      by = producto
+    ][order(-revenue_total)]
+    
+    ggplot(productos_top, aes(x = reorder(producto, revenue_total), y = revenue_total)) +
+      geom_col(fill = "#2E8B57") +
+      coord_flip() +
+      labs(title = "Revenue por Producto", x = "Producto", y = "Revenue Total") +
+      theme_minimal()
+  })
+  
+  # Tabla resumen
+  output$tabla_resumen <- DT::renderDataTable({
+    resumen <- datos_filtrados()[,
+      .(
+        Revenue = sum(revenue),
+        Unidades = sum(cantidad),
+        Transacciones = .N,
+        Ticket_Promedio = round(mean(revenue), 2)
+      ),
+      by = .(Región = region, Producto = producto)
+    ][order(-Revenue)]
+    
+    DT::datatable(resumen, options = list(pageLength = 10))
+  })
+  
+  # Tabla detallada
+  output$tabla_detallada <- DT::renderDataTable({
+    DT::datatable(datos_filtrados(), options = list(pageLength = 25, scrollX = TRUE))
+  })
+}
+
+# Lanzar la app
+# shinyApp(ui = ui, server = server)
+```
+
+### 2. **Ejemplo Simplificado Funcional**
+
+```{r}
+#| label: shiny-demo
+#| echo: true
+
+# Mini dashboard en R Markdown con DT
+library(DT)
+
+# Preparar datos para tabla interactiva
+tabla_dashboard <- ventas_detalladas[,
+  .(
+    Revenue_Total = round(sum(revenue), 2),
+    Unidades_Vendidas = sum(cantidad),
+    Num_Transacciones = .N,
+    Ticket_Promedio = round(mean(revenue), 2),
+    Satisfaccion_Media = round(mean(satisfaccion_cliente), 2),
+    Descuento_Promedio = round(mean(descuento) * 100, 1)
+  ),
+  by = .(Región = region, Producto = producto, Año = año)
+][order(-Revenue_Total)]
+
+# Crear tabla interactiva
+DT::datatable(
+  tabla_dashboard,
+  caption = "Dashboard Interactivo de Ventas",
+  options = list(
+    pageLength = 15,
+    scrollX = TRUE,
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel')
+  ),
+  extensions = 'Buttons',
+  rownames = FALSE
+) %>%
+  DT::formatCurrency(c("Revenue_Total", "Ticket_Promedio"), currency = "$") %>%
+  DT::formatPercentage("Descuento_Promedio", digits = 1) %>%
+  DT::formatStyle(
+    "Satisfaccion_Media",
+    background = DT::styleColorBar(range(tabla_dashboard$Satisfaccion_Media), "#e8f5e8"),
+    backgroundSize = "100% 90%",
+    backgroundRepeat = "no-repeat",
+    backgroundPosition = "center"
+  )
+```
+
+## Integración con tidymodels: Machine Learning
+
+`data.table` es excelente para preprocesamiento de datos, mientras que `tidymodels` maneja el modelado de forma elegante.
+
+### 1. **Workflow: data.table → tidymodels**
+
+```{r}
+#| label: tidymodels-workflow
+#| echo: true
+
+# Preparación de datos con data.table
+datos_modelo <- datos_clientes[,
+  .(
+    # Variables predictoras
+    edad_normalizada = scale(edad)[,1],
+    ingresos_log = log(ingresos),
+    antiguedad_años = antiguedad_meses / 12,
+    productos_per_año = num_productos / pmax(antiguedad_meses/12, 0.1),
+    valor_cliente_scaled = scale(valor_cliente)[,1],
+    engagement_score,
+    
+    # Variables categóricas
+    region = as.factor(region),
+    canal_preferido = as.factor(canal_preferido),
+    categoria_edad = as.factor(categoria_edad),
+    
+    # Variable objetivo
+    churn = as.factor(ifelse(churn_flag == 1, "Si", "No"))
+  )
+]
+
+print("Datos preparados para el modelo:")
+print(head(datos_modelo))
+
+# Resumen de la variable objetivo
+print("Distribución de Churn:")
+print(datos_modelo[, .N, by = churn])
+```
+
+### 2. **Modelado con tidymodels (ejemplo conceptual)**
+
+```{r}
+#| label: tidymodels-ejemplo
+#| echo: true
+#| eval: false
+
+# Ejemplo de workflow con tidymodels (requiere tidymodels instalado)
+library(tidymodels)
+
+# 1. Split de datos
+set.seed(123)
+data_split <- initial_split(datos_modelo, prop = 0.8, strata = churn)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# 2. Receta de preprocesamiento
+receta_churn <- recipe(churn ~ ., data = train_data) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+
+# 3. Modelo
+modelo_rf <- rand_forest(trees = 500, mtry = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("randomForest")
+
+# 4. Workflow
+workflow_churn <- workflow() %>%
+  add_recipe(receta_churn) %>%
+  add_model(modelo_rf)
+
+# 5. Cross-validation y tuning
+cv_folds <- vfold_cv(train_data, v = 5, strata = churn)
+
+tune_results <- workflow_churn %>%
+  tune_grid(cv_folds, grid = 10)
+
+# 6. Mejor modelo
+best_params <- select_best(tune_results, metric = "roc_auc")
+final_workflow <- finalize_workflow(workflow_churn, best_params)
+
+# 7. Fit final
+modelo_final <- fit(final_workflow, train_data)
+
+# 8. Predicciones
+predicciones <- predict(modelo_final, test_data, type = "prob")
+```
+
+### 3. **Post-procesamiento con data.table**
+
+```{r}
+#| label: post-procesamiento
+#| echo: true
+
+# Simulamos predicciones para el ejemplo
+set.seed(456)
+predicciones_simuladas <- data.table(
+  cliente_id = datos_modelo[1:200, which = TRUE],  # IDs de clientes de prueba
+  prob_churn = runif(200, 0, 1),
+  prediccion = sample(c("Si", "No"), 200, replace = TRUE, prob = c(0.2, 0.8))
+)
+
+# Unir predicciones con datos originales usando data.table
+resultados_finales <- datos_clientes[predicciones_simuladas, on = .(cliente_id)]
+
+# Análisis de resultados por segmento
+analisis_segmentos <- resultados_finales[,
+  .(
+    clientes_total = .N,
+    churn_predicho = sum(prediccion == "Si"),
+    prob_churn_media = round(mean(prob_churn), 3),
+    valor_en_riesgo = sum(valor_cliente[prediccion == "Si"]),
+    ingresos_promedio = round(mean(ingresos), 0)
+  ),
+  by = .(region, categoria_edad)
+][order(-valor_en_riesgo)]
+
+print("Análisis de riesgo por segmento:")
+print(analisis_segmentos)
+```
+
+## dtplyr: Lo Mejor de Ambos Mundos
+
+El paquete `dtplyr` permite usar sintaxis `dplyr` que se traduce automáticamente a `data.table` por debajo.
+
+### 1. **Introducción a dtplyr**
+
+```{r}
+#| label: dtplyr-intro
+#| echo: true
+
+# Cargar dtplyr si está disponible
+if(requireNamespace("dtplyr", quietly = TRUE)) {
+  library(dtplyr)
+  library(dplyr, warn.conflicts = FALSE)
+  
+  # Convertir data.table a lazy_dt
+  ventas_lazy <- lazy_dt(ventas_detalladas)
+  
+  # Usar sintaxis dplyr que se traduce a data.table
+  resultado_dtplyr <- ventas_lazy %>%
+    filter(año == 2024, revenue > 100) %>%
+    group_by(region, producto) %>%
+    summarise(
+      revenue_total = sum(revenue),
+      unidades_total = sum(cantidad),
+      satisfaccion_media = mean(satisfaccion_cliente),
+      .groups = 'drop'
+    ) %>%
+    arrange(desc(revenue_total)) %>%
+    as.data.table()  # Convertir de vuelta a data.table
+  
+  print("Resultado con dtplyr:")
+  print(head(resultado_dtplyr))
+  
+  # Ver el código data.table generado
+  cat("\nCódigo data.table generado por dtplyr:\n")
+  ventas_lazy %>%
+    filter(año == 2024, revenue > 100) %>%
+    group_by(region, producto) %>%
+    summarise(
+      revenue_total = sum(revenue),
+      unidades_total = sum(cantidad),
+      satisfaccion_media = mean(satisfaccion_cliente),
+      .groups = 'drop'
+    ) %>%
+    arrange(desc(revenue_total)) %>%
+    show_query()
+    
+} else {
+  cat("dtplyr no está instalado. Para instalarlo:\n")
+  cat("install.packages('dtplyr')\n")
+}
+```
+
+### 2. **Cuándo Usar dtplyr**
+
+```{r}
+#| label: cuando-dtplyr
+#| echo: true
+#| eval: false
+
+# ✅ Usar dtplyr cuando:
+# - Tu equipo ya conoce dplyr
+# - Necesitas compatibilidad con código existente de dplyr
+# - Quieres una transición gradual a data.table
+# - Trabajas en proyectos colaborativos con usuarios de tidyverse
+
+# ✅ Usar data.table puro cuando:
+# - Necesitas máxima velocidad
+# - Usas características avanzadas (rolling joins, non-equi joins)
+# - Tienes control total sobre el código
+# - Trabajas con datasets muy grandes regularmente
+
+# Ejemplo de comparación
+# dtplyr (sintaxis familiar)
+resultado_dtplyr <- lazy_dt(big_data) %>%
+  filter(category %in% c("A", "B")) %>%
+  group_by(region) %>%
+  summarise(avg_value = mean(value)) %>%
+  as.data.table()
+
+# data.table puro (más directo y rápido)
+resultado_dt <- big_data[category %in% c("A", "B"), .(avg_value = mean(value)), by = region]
+```
+
+## Conexiones con Bases de Datos y Big Data
+
+### 1. **Lectura Eficiente con `fread()`**
+
+```{r}
+#| label: fread-demo
+#| echo: true
+#| eval: false
+
+# fread es increíblemente rápido para archivos grandes
+library(data.table)
+
+# Leer CSV gigante (ejemplo)
+datos_grandes <- fread("archivo_gigante.csv", 
+                      nrows = 1000000,          # Limitar filas para testing
+                      select = c("col1", "col2", "col3"),  # Solo columnas necesarias
+                      colClasses = list(character = "col1",  # Especificar tipos
+                                      numeric = c("col2", "col3")),
+                      showProgress = TRUE)      # Mostrar progreso
+
+# Configuraciones útiles de fread
+fread("datos.csv",
+      sep = ",",                    # Separador
+      header = TRUE,               # Primera fila como headers
+      stringsAsFactors = FALSE,    # No convertir a factores
+      data.table = TRUE,          # Devolver data.table (por defecto)
+      nThread = getDTthreads())   # Usar threads múltiples
+```
+
+### 2. **Escritura Eficiente con `fwrite()`**
+
+```{r}
+#| label: fwrite-demo
+#| echo: true
+
+# Crear archivo de ejemplo
+archivo_temporal <- tempfile(fileext = ".csv")
+
+# fwrite es muy rápido para escribir
+fwrite(ventas_detalladas, 
+       file = archivo_temporal,
+       sep = ",",
+       row.names = FALSE,
+       col.names = TRUE,
+       showProgress = TRUE,
+       compress = "auto")  # Compresión automática
+
+# Verificar que se escribió correctamente
+info_archivo <- file.info(archivo_temporal)
+cat("Archivo creado:", basename(archivo_temporal), "\n")
+cat("Tamaño:", round(info_archivo$size / 1024, 2), "KB\n")
+
+# Limpiar
+unlink(archivo_temporal)
+```
+
+### 3. **Integración con Arrow/Parquet**
+
+```{r}
+#| label: arrow-integration
+#| echo: true
+#| eval: false
+
+# Ejemplo de integración con Arrow (requiere paquete arrow)
+library(arrow)
+
+# Escribir a formato Parquet (muy eficiente)
+write_parquet(ventas_detalladas, "ventas.parquet")
+
+# Leer de Parquet directo a data.table
+datos_parquet <- read_parquet("ventas.parquet", as_data_frame = FALSE)
+setDT(datos_parquet)  # Convertir a data.table si es necesario
+
+# Trabajar con datasets grandes en Arrow
+dataset <- open_dataset("directorio_parquet/")
+resultado <- dataset %>%
+  filter(año == 2024) %>%
+  group_by(region) %>%
+  summarise(revenue_total = sum(revenue)) %>%
+  collect() %>%  # Traer a memoria
+  as.data.table()  # Convertir a data.table
+```
+
+## Ejercicio Final: Aplicación Completa
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 9: Dashboard Completo de Análisis
+
+Crea un análisis completo que integre múltiples herramientas:
+
+1. **Preparación de datos** con `data.table`
+2. **Visualizaciones** con `ggplot2`
+3. **Tabla interactiva** con `DT`
+4. **Análisis predictivo simple**
+5. **Reporte de insights**
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 9
+
+```{r}
+#| label: solucion-ejercicio-9
+#| echo: true
+#| fig-width: 12
+#| fig-height: 10
+
+# 1. PREPARACIÓN DE DATOS con data.table
+analisis_completo <- ventas_detalladas[,
+  .(
+    revenue_total = sum(revenue),
+    unidades_total = sum(cantidad),
+    transacciones = .N,
+    ticket_promedio = mean(revenue),
+    margen_promedio = 1 - mean(descuento),
+    satisfaccion_media = mean(satisfaccion_cliente),
+    dias_activos = uniqueN(fecha)
+  ),
+  by = .(region, producto, año)
+][,
+  .(
+    region, producto, año,
+    revenue_total = round(revenue_total, 2),
+    unidades_total,
+    transacciones,
+    ticket_promedio = round(ticket_promedio, 2),
+    margen_promedio = round(margen_promedio, 3),
+    satisfaccion_media = round(satisfaccion_media, 2),
+    revenue_per_dia = round(revenue_total / dias_activos, 2),
+    eficiencia = round((satisfaccion_media * margen_promedio * revenue_total) / 1000, 2)
+  )
+][order(-revenue_total)]
+
+# 2. VISUALIZACIONES con ggplot2
+library(gridExtra)
+
+# Gráfico 1: Revenue por región y año
+g1 <- ggplot(analisis_completo[, .(revenue = sum(revenue_total)), by = .(region, año)], 
+            aes(x = region, y = revenue, fill = factor(año))) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::comma_format(prefix = "$")) +
+  labs(title = "Revenue por Región y Año", x = "Región", y = "Revenue", fill = "Año") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Gráfico 2: Eficiencia vs Satisfacción
+g2 <- ggplot(analisis_completo, aes(x = satisfaccion_media, y = eficiencia)) +
+  geom_point(aes(color = region, size = revenue_total), alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "#2E8B57") +
+  labs(title = "Eficiencia vs Satisfacción del Cliente", 
+       x = "Satisfacción Media", y = "Índice de Eficiencia", 
+       color = "Región", size = "Revenue") +
+  theme_minimal()
+
+# Combinar gráficos
+grid.arrange(g1, g2, ncol = 2)
+
+# 3. TABLA INTERACTIVA con DT
+cat("\n=== DASHBOARD INTERACTIVO ===\n")
+
+tabla_final <- DT::datatable(
+  analisis_completo,
+  caption = "Análisis Completo de Performance por Región y Producto",
+  options = list(
+    pageLength = 10,
+    scrollX = TRUE,
+    order = list(list(3, 'desc'))  # Ordenar por revenue_total
+  ),
+  rownames = FALSE
+) %>%
+  DT::formatCurrency(c("revenue_total", "ticket_promedio", "revenue_per_dia"), currency = "$") %>%
+  DT::formatRound(c("margen_promedio", "satisfaccion_media", "eficiencia"), digits = 2) %>%
+  DT::formatStyle(
+    "eficiencia",
+    background = DT::styleColorBar(range(analisis_completo$eficiencia), "#e8f5e8"),
+    backgroundSize = "100% 90%",
+    backgroundRepeat = "no-repeat",
+    backgroundPosition = "center"
+  )
+
+print(tabla_final)
+
+# 4. ANÁLISIS PREDICTIVO SIMPLE
+cat("\n=== INSIGHTS AUTOMÁTICOS ===\n")
+
+# Top performers
+top_region <- analisis_completo[, .(revenue_total = sum(revenue_total)), by = region][order(-revenue_total)][1, region]
+top_producto <- analisis_completo[, .(revenue_total = sum(revenue_total)), by = producto][order(-revenue_total)][1, producto]
+
+# Correlaciones clave
+correlacion_satisfaccion_revenue <- cor(analisis_completo$satisfaccion_media, analisis_completo$revenue_total)
+correlacion_margen_satisfaccion <- cor(analisis_completo$margen_promedio, analisis_completo$satisfaccion_media)
+
+# 5. REPORTE DE INSIGHTS
+cat("🏆 TOP PERFORMERS:\n")
+cat("   • Mejor región:", top_region, "\n")
+cat("   • Mejor producto:", top_producto, "\n\n")
+
+cat("📊 CORRELACIONES CLAVE:\n")
+cat("   • Satisfacción vs Revenue:", round(correlacion_satisfaccion_revenue, 3), "\n")
+cat("   • Margen vs Satisfacción:", round(correlacion_margen_satisfaccion, 3), "\n\n")
+
+cat("💡 RECOMENDACIONES:\n")
+if(correlacion_satisfaccion_revenue > 0.3) {
+  cat("   • Invertir en mejora de satisfacción del cliente puede incrementar revenue\n")
+}
+if(correlacion_margen_satisfaccion > 0.2) {
+  cat("   • Márgenes más altos están asociados con mejor satisfacción\n")
+}
+
+# Resumen ejecutivo
+resumen_ejecutivo <- analisis_completo[,
+  .(
+    revenue_total = sum(revenue_total),
+    productos_unicos = uniqueN(producto),
+    regiones_activas = uniqueN(region),
+    satisfaccion_promedio = round(mean(satisfaccion_media), 2)
+  )
+]
+
+cat("\n📈 RESUMEN EJECUTIVO:\n")
+cat("   • Revenue total:", scales::dollar(resumen_ejecutivo$revenue_total), "\n")
+cat("   • Productos activos:", resumen_ejecutivo$productos_unicos, "\n")
+cat("   • Regiones operativas:", resumen_ejecutivo$regiones_activas, "\n")
+cat("   • Satisfacción promedio:", resumen_ejecutivo$satisfaccion_promedio, "/5\n")
+```
+:::
+
+## Mejores Prácticas para Integración
+
+### 1. **Workflow Recomendado**
+
+```{r}
+#| label: workflow-recomendado
+#| echo: true
+#| eval: false
+
+# PASO 1: Importación y limpieza con data.table
+datos_raw <- fread("datos_grandes.csv")
+datos_limpios <- datos_raw[!is.na(columna_clave)][, columnas_calculadas := f(x)]
+
+# PASO 2: Análisis exploratorio con data.table + ggplot2
+datos_agregados <- datos_limpios[, .(metrica = mean(valor)), by = grupo]
+ggplot(datos_agregados, aes(x = grupo, y = metrica)) + geom_col()
+
+# PASO 3: Modelado con tidymodels (si es necesario)
+modelo_datos <- as_tibble(datos_limpios)  # Solo para modelado
+# ... workflow de tidymodels ...
+
+# PASO 4: Resultados de vuelta a data.table
+resultados_dt <- as.data.table(predicciones)
+analisis_final <- datos_limpios[resultados_dt, on = .(id)]
+
+# PASO 5: Visualización y reporting
+dashboard_final <- crear_dashboard(analisis_final)
+```
+
+### 2. **Consideraciones de Performance**
+
+- **Mantén los datos en data.table** tanto tiempo como sea posible
+- **Convierte a tibble/data.frame solo cuando sea necesario** para otros paquetes
+- **Usa `lazy_dt()` de dtplyr** para código dplyr existente
+- **Aprovecha `fread()` y `fwrite()`** para I/O rápido
+- **Planifica la memoria** - `data.table` es eficiente, pero datasets enormes necesitan estrategia
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **`data.table` + `ggplot2`** es una combinación poderosa para análisis visual
+2. **Shiny apps** son ultra-responsivas cuando usan `data.table` en el backend
+3. **`dtplyr`** permite transición gradual desde `dplyr` a `data.table`
+4. **`tidymodels`** se integra bien para workflows de machine learning
+5. **`fread()`/`fwrite()`** son las funciones más rápidas de R para I/O de archivos
+6. **La compatibilidad** con el ecosistema R es excelente sin sacrificar performance
+:::
+
+Has completado tu formación integral en `data.table`. En el próximo capítulo concludo el tutorial con un resumen de todo lo aprendido y recursos para continuar tu desarrollo.

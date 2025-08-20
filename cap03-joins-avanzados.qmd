@@ -1,0 +1,856 @@
+# Joins Avanzados: Non-Equi y Rolling Joins
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **Non-equi joins**: Uniones basadas en rangos y desigualdades
+- **Rolling joins**: La herramienta perfecta para series temporales
+- **Update joins avanzados** con condiciones complejas
+- **Joins múltiples** con condiciones heterogéneas
+- **Casos de uso reales** en finanzas, medicina y análisis temporal
+:::
+
+```{r}
+#| label: setup-cap03-joins-avanzados
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(knitr)
+library(DT)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets especializados para joins avanzados
+set.seed(2024)
+
+# Dataset financiero para rolling joins
+precios_historicos <- data.table(
+  fecha = seq(as.Date("2024-01-01"), as.Date("2024-12-31"), by = "day"),
+  ticker = rep(c("AAPL", "GOOGL", "MSFT", "TSLA", "AMZN"), each = 73),
+  precio_cierre = round(c(
+    cumsum(rnorm(73, 0.5, 5)) + 150,  # AAPL trend alcista
+    cumsum(rnorm(73, 0.2, 15)) + 2800, # GOOGL menos volátil
+    cumsum(rnorm(73, 0.3, 8)) + 350,   # MSFT estable
+    cumsum(rnorm(73, -0.1, 20)) + 200, # TSLA bajista
+    cumsum(rnorm(73, 0.4, 12)) + 120   # AMZN moderado
+  ), 2),
+  volumen = round(runif(365, 1000000, 50000000), 0)
+)[precio_cierre > 0]  # Asegurar precios positivos
+
+# Transacciones de trading para rolling joins
+operaciones_trading <- data.table(
+  operacion_id = 1:500,
+  ticker = sample(c("AAPL", "GOOGL", "MSFT", "TSLA", "AMZN"), 500, replace = TRUE),
+  fecha_operacion = sample(seq(as.Date("2024-01-01"), as.Date("2024-12-31"), by = "day"), 500, replace = TRUE),
+  tipo = sample(c("COMPRA", "VENTA"), 500, replace = TRUE, prob = c(0.6, 0.4)),
+  cantidad = sample(c(50, 100, 200, 500, 1000), 500, replace = TRUE),
+  precio_limite = round(runif(500, 100, 3000), 2),
+  trader_id = sample(paste0("T", 1:20), 500, replace = TRUE)
+)
+
+# Dataset médico para non-equi joins
+pacientes_clinica <- data.table(
+  paciente_id = 1:100,
+  nombre = paste0("Paciente_", 1:100),
+  edad = sample(18:85, 100, replace = TRUE),
+  peso = round(rnorm(100, 70, 15), 1),
+  altura = round(runif(100, 1.50, 1.95), 2),
+  glucosa = round(runif(100, 70, 300), 1),
+  presion_sistolica = sample(90:200, 100, replace = TRUE),
+  presion_diastolica = sample(60:110, 100, replace = TRUE),
+  colesterol = round(rnorm(100, 200, 50), 0),
+  fecha_consulta = sample(seq(as.Date("2024-01-01"), as.Date("2024-12-31"), by = "day"), 100)
+)
+
+# Calcular IMC y asegurar tipos consistentes
+pacientes_clinica[, `:=`(
+  imc = round(peso / (altura^2), 1),
+  # Convertir a numeric para consistencia con rangos_medicos
+  glucosa = as.numeric(glucosa),
+  presion_sistolica = as.numeric(presion_sistolica),
+  presion_diastolica = as.numeric(presion_diastolica),
+  colesterol = as.numeric(colesterol)
+)]
+
+# Rangos de referencia médica para non-equi joins
+rangos_medicos <- data.table(
+  parametro = rep(c("IMC", "Glucosa", "Presión", "Colesterol"), each = 3),
+  valor_min = as.numeric(c(
+    0, 18.5, 25,      # IMC: Bajo, Normal, Sobrepeso
+    0, 100, 126,      # Glucosa: Normal, Prediabetes, Diabetes  
+    0, 120, 140,      # Presión: Normal, Elevada, Hipertensión
+    0, 200, 240       # Colesterol: Deseable, Límite, Alto
+  )),
+  valor_max = as.numeric(c(
+    18.4, 24.9, Inf,  # IMC
+    99, 125, Inf,     # Glucosa
+    119, 139, Inf,    # Presión
+    199, 239, Inf     # Colesterol
+  )),
+  categoria = rep(c("Bajo/Normal", "Normal/Óptimo", "Alto/Riesgo"), 4),
+  nivel_riesgo = rep(c("Bajo", "Normal", "Alto"), 4)
+)
+
+# Dataset de eventos para análisis temporal
+eventos_mercado <- data.table(
+  evento_id = 1:15,
+  tipo_evento = sample(c("Earnings", "FDA_Approval", "Product_Launch", "Merger", "Split"), 15, replace = TRUE),
+  ticker_afectado = sample(c("AAPL", "GOOGL", "MSFT", "TSLA", "AMZN"), 15, replace = TRUE),
+  fecha_evento = sample(seq(as.Date("2024-02-01"), as.Date("2024-11-30"), by = "week"), 15),
+  impacto_esperado = sample(c("Positivo", "Negativo", "Neutro"), 15, replace = TRUE, prob = c(0.4, 0.3, 0.3)),
+  ventana_dias_pre = sample(c(3, 5, 7, 10), 15, replace = TRUE),
+  ventana_dias_post = sample(c(3, 5, 7, 10, 15), 15, replace = TRUE)
+)
+
+# Calcular ventanas de tiempo
+eventos_mercado[, `:=`(
+  fecha_inicio_ventana = fecha_evento - ventana_dias_pre,
+  fecha_fin_ventana = fecha_evento + ventana_dias_post
+)]
+
+# Dataset de sensores IoT para rolling joins temporales
+sensores_iot <- data.table(
+  timestamp = seq(as.POSIXct("2024-01-01 00:00:00"), 
+                 as.POSIXct("2024-01-07 23:59:59"), 
+                 by = "15 min"),
+  sensor_id = rep(c("TEMP_01", "TEMP_02", "HUMID_01", "PRESSURE_01"), length.out = 672),
+  valor = round(c(
+    rnorm(168, 22, 3),    # TEMP_01
+    rnorm(168, 24, 2.5),  # TEMP_02  
+    rnorm(168, 65, 10),   # HUMID_01
+    rnorm(168, 1013, 15)  # PRESSURE_01
+  ), 2),
+  ubicacion = rep(c("Planta_A", "Planta_A", "Planta_B", "Planta_B"), length.out = 672)
+)
+
+# Eventos de mantenimiento para rolling joins
+mantenimiento <- data.table(
+  mantenimiento_id = 1:20,
+  sensor_id = sample(c("TEMP_01", "TEMP_02", "HUMID_01", "PRESSURE_01"), 20, replace = TRUE),
+  fecha_mantenimiento = sample(seq(as.POSIXct("2024-01-01 08:00:00"), 
+                                  as.POSIXct("2024-01-07 18:00:00"), 
+                                  by = "6 hour"), 20),
+  tipo_mantenimiento = sample(c("Calibracion", "Limpieza", "Reemplazo"), 20, replace = TRUE),
+  duracion_horas = sample(c(0.5, 1, 2, 4), 20, replace = TRUE)
+)
+```
+
+## Non-Equi Joins: Más Allá de la Igualdad
+
+Los non-equi joins permiten unir tablas basándose en rangos, desigualdades y condiciones complejas. Son especialmente útiles en análisis médico, financiero y clasificación por rangos.
+
+### 1. **Conceptos Fundamentales**
+
+Un non-equi join utiliza operadores de comparación (`<=`, `>=`, `<`, `>`) en lugar de igualdad (`==`):
+
+```{r}
+#| label: non-equi-conceptos
+#| echo: true
+
+# Ejemplo simple: clasificar pacientes por IMC
+rangos_imc <- rangos_medicos[parametro == "IMC"]
+print("Rangos de IMC:")
+print(rangos_imc)
+
+# Non-equi join básico
+pacientes_clasificados_imc <- rangos_imc[pacientes_clinica,
+  on = .(valor_min <= imc, valor_max >= imc),
+  .(paciente_id, nombre, imc, categoria, nivel_riesgo)]
+
+print("Pacientes clasificados por IMC:")
+print(head(pacientes_clasificados_imc[order(imc)], 10))
+```
+
+### 2. **Non-Equi Join con Múltiples Condiciones**
+
+```{r}
+#| label: non-equi-multiples-condiciones
+#| echo: true
+
+# Clasificar pacientes por múltiples parámetros simultáneamente
+# Crear función auxiliar para clasificar
+clasificar_parametro <- function(dt, param_name, value_col) {
+  rangos <- rangos_medicos[parametro == param_name]
+  resultado <- rangos[dt, on = c("valor_min" = paste0(value_col, ">="), "valor_max" = paste0(value_col, "<=")),
+                     .(paciente_id, parametro, categoria, nivel_riesgo),
+                     nomatch = NULL]
+  return(resultado)
+}
+
+# Clasificar por glucosa
+pacientes_glucosa <- rangos_medicos[parametro == "Glucosa"][pacientes_clinica,
+  on = .(valor_min <= glucosa, valor_max >= glucosa),
+  .(paciente_id, parametro = "Glucosa", valor = glucosa, categoria, nivel_riesgo)]
+
+# Clasificar por presión sistólica
+pacientes_presion <- rangos_medicos[parametro == "Presión"][pacientes_clinica,
+  on = .(valor_min <= presion_sistolica, valor_max >= presion_sistolica),  
+  .(paciente_id, parametro = "Presion", valor = presion_sistolica, categoria, nivel_riesgo)]
+
+# Combinar clasificaciones
+todas_clasificaciones <- rbind(
+  pacientes_glucosa[!is.na(categoria)],
+  pacientes_presion[!is.na(categoria)]
+)
+
+# Resumen de riesgos por paciente
+resumen_riesgo_pacientes <- todas_clasificaciones[,
+  .(
+    parametros_evaluados = .N,
+    riesgos_altos = sum(nivel_riesgo == "Alto"),
+    riesgos_normales = sum(nivel_riesgo == "Normal"),
+    clasificacion_general = fcase(
+      sum(nivel_riesgo == "Alto") >= 2, "Alto Riesgo Múltiple",
+      sum(nivel_riesgo == "Alto") == 1, "Riesgo Moderado", 
+      default = "Bajo Riesgo"
+    )
+  ), by = paciente_id]
+
+print("Resumen de riesgos por paciente:")
+print(head(resumen_riesgo_pacientes[order(-riesgos_altos)], 10))
+```
+
+### 3. **Non-Equi Join para Ventanas Temporales**
+
+```{r}
+#| label: non-equi-ventanas-temporales
+#| echo: true
+
+# Encontrar todas las operaciones que ocurrieron dentro de ventanas de eventos
+operaciones_en_ventanas <- eventos_mercado[operaciones_trading,
+  on = .(ticker_afectado = ticker,
+         fecha_inicio_ventana <= fecha_operacion,
+         fecha_fin_ventana >= fecha_operacion),
+  .(evento_id, tipo_evento, fecha_evento, impacto_esperado,
+    operacion_id, fecha_operacion, tipo, cantidad, precio_limite),
+  nomatch = NULL]
+
+# Análisis de comportamiento en ventanas de eventos
+comportamiento_eventos <- operaciones_en_ventanas[,
+  .(
+    operaciones_total = .N,
+    operaciones_compra = sum(tipo == "COMPRA"),
+    operaciones_venta = sum(tipo == "VENTA"),
+    volumen_total = sum(cantidad),
+    precio_promedio = round(mean(precio_limite), 2),
+    dias_promedio_evento = round(mean(as.numeric(abs(fecha_operacion - fecha_evento))), 1)
+  ), by = .(tipo_evento, impacto_esperado)]
+
+print("Comportamiento de trading en ventanas de eventos:")
+print(comportamiento_eventos[order(-volumen_total)])
+```
+
+## Rolling Joins: La Joya para Series Temporales
+
+Los rolling joins son perfectos para conectar cada observación con el último valor disponible en el tiempo.
+
+### 1. **Rolling Join Básico**
+
+```{r}
+#| label: rolling-join-basico
+#| echo: true
+
+# Preparar datos con keys para rolling join
+precios_key <- copy(precios_historicos)
+operaciones_key <- copy(operaciones_trading)
+
+# Establecer keys compuestas: ticker + fecha
+setkey(precios_key, ticker, fecha)
+setkey(operaciones_key, ticker, fecha_operacion)
+
+# Rolling join: obtener el último precio disponible para cada operación
+operaciones_con_precio <- precios_key[operaciones_key, roll = TRUE]
+
+# Verificar estructura del resultado
+print("Columnas disponibles después del rolling join:")
+print(names(operaciones_con_precio))
+print("Primeras filas para entender la estructura:")
+print(head(operaciones_con_precio, 3))
+
+# En un rolling join X[Y], el resultado incluye todas las columnas de Y más las de X
+# Las columnas de la fecha de Y se mantienen, no se prefijan con i.
+print("Operaciones con precios históricos (rolling join):")
+if("fecha_operacion" %in% names(operaciones_con_precio)) {
+  # Si fecha_operacion existe directamente
+  print(head(operaciones_con_precio[, .(ticker, fecha, precio_cierre, 
+                                       operacion_id, fecha_operacion, tipo, cantidad)], 10))
+  # Calcular diferencia temporal
+  operaciones_con_precio[, dias_diferencia := as.numeric(fecha_operacion - fecha)]
+} else {
+  # Buscar columnas con fecha en el nombre
+  fecha_cols <- grep("fecha", names(operaciones_con_precio), value = TRUE)
+  print(paste("Columnas con 'fecha' encontradas:", paste(fecha_cols, collapse = ", ")))
+  
+  # Mostrar primeras columnas disponibles
+  print(head(operaciones_con_precio[, 1:min(8, ncol(operaciones_con_precio))], 10))
+}
+
+# Estadísticas de la calidad del match (solo si dias_diferencia fue creada)
+if("dias_diferencia" %in% names(operaciones_con_precio)) {
+  cat("Estadísticas del rolling join:\n")
+  cat("• Operaciones con precio exacto (mismo día):", sum(operaciones_con_precio$dias_diferencia == 0, na.rm = TRUE), "\n")
+  cat("• Operaciones con precio de días anteriores:", sum(operaciones_con_precio$dias_diferencia > 0, na.rm = TRUE), "\n")
+  cat("• Diferencia promedio en días:", round(mean(operaciones_con_precio$dias_diferencia, na.rm = TRUE), 1), "\n")
+} else {
+  cat("La variable dias_diferencia no pudo ser creada debido a problemas con las columnas de fecha.\n")
+}
+```
+
+### 2. **Rolling Join con Límites Temporales**
+
+```{r}
+#| label: rolling-join-limitado
+#| echo: true
+
+# Rolling join con límite: solo usar precios de máximo 7 días anteriores
+operaciones_precio_limitado <- precios_key[operaciones_key, 
+                                          roll = 7,  # máximo 7 días
+                                          rollends = c(TRUE, TRUE)]
+
+# Comparar con rolling join ilimitado
+matches_limitado <- sum(!is.na(operaciones_precio_limitado$precio_cierre))
+matches_ilimitado <- sum(!is.na(operaciones_con_precio$precio_cierre))
+
+cat("Comparación de rolling joins:\n")
+cat("• Matches con rolling limitado (7 días):", matches_limitado, "\n") 
+cat("• Matches con rolling ilimitado:", matches_ilimitado, "\n")
+cat("• Diferencia:", matches_ilimitado - matches_limitado, "operaciones\n")
+
+# Analizar operaciones sin match en rolling limitado
+operaciones_sin_precio <- operaciones_precio_limitado[is.na(precio_cierre)]
+if(nrow(operaciones_sin_precio) > 0) {
+  cat("• Operaciones sin precio (primeros días del año o fines de semana largos):", nrow(operaciones_sin_precio), "\n")
+}
+```
+
+### 3. **Rolling Join Bidireccional (Nearest)**
+
+```{r}
+#| label: rolling-join-nearest
+#| echo: true
+
+# Rolling join "nearest": buscar el precio más cercano (antes o después)
+operaciones_nearest <- precios_key[operaciones_key, roll = "nearest"]
+
+# Comparar diferentes tipos de rolling join
+comparacion_rolling <- data.table(
+  Tipo_Rolling = c("Backward (TRUE)", "Limited (7 days)", "Nearest"),
+  Matches = c(
+    sum(!is.na(operaciones_con_precio$precio_cierre)),
+    sum(!is.na(operaciones_precio_limitado$precio_cierre)), 
+    sum(!is.na(operaciones_nearest$precio_cierre))
+  ),
+  Cobertura_Pct = round(c(
+    mean(!is.na(operaciones_con_precio$precio_cierre)) * 100,
+    mean(!is.na(operaciones_precio_limitado$precio_cierre)) * 100,
+    mean(!is.na(operaciones_nearest$precio_cierre)) * 100
+  ), 1)
+)
+
+print("Comparación de tipos de rolling join:")
+print(comparacion_rolling)
+```
+
+### 4. **Rolling Join con Sensores IoT**
+
+```{r}
+#| label: rolling-join-sensores
+#| echo: true
+
+# Caso práctico: asociar eventos de mantenimiento con lecturas de sensores
+setkey(sensores_iot, sensor_id, timestamp)
+setkey(mantenimiento, sensor_id, fecha_mantenimiento)
+
+# Rolling join para obtener la última lectura antes del mantenimiento
+lecturas_pre_mantenimiento <- sensores_iot[mantenimiento, roll = TRUE]
+
+# Verificar estructura del resultado
+print("Columnas disponibles después del rolling join de sensores:")
+print(names(lecturas_pre_mantenimiento))
+
+# Análisis del estado de sensores antes del mantenimiento
+if("fecha_mantenimiento" %in% names(lecturas_pre_mantenimiento)) {
+  # Si fecha_mantenimiento existe directamente
+  analisis_pre_mantenimiento <- lecturas_pre_mantenimiento[!is.na(valor),
+    .(
+      valor_promedio_pre = round(mean(valor), 2),
+      valor_min_pre = min(valor),
+      valor_max_pre = max(valor),
+      eventos_mantenimiento = .N,
+      tiempo_promedio_desde_lectura = round(mean(as.numeric(fecha_mantenimiento - timestamp) / 60), 1) # minutos
+    ), by = .(sensor_id, tipo_mantenimiento)]
+} else {
+  # Buscar columnas con fecha o mantenimiento en el nombre
+  fecha_cols <- grep("fecha|mantenimiento", names(lecturas_pre_mantenimiento), value = TRUE)
+  print(paste("Columnas con 'fecha' o 'mantenimiento' encontradas:", paste(fecha_cols, collapse = ", ")))
+  
+  # Análisis simplificado sin cálculo temporal
+  analisis_pre_mantenimiento <- lecturas_pre_mantenimiento[!is.na(valor),
+    .(
+      valor_promedio_pre = round(mean(valor), 2),
+      valor_min_pre = min(valor),
+      valor_max_pre = max(valor),
+      eventos_mantenimiento = .N
+    ), by = .(sensor_id, tipo_mantenimiento)]
+}
+
+print("Análisis de sensores antes del mantenimiento:")
+print(analisis_pre_mantenimiento[order(sensor_id, tipo_mantenimiento)])
+```
+
+## Update Joins Avanzados con Condiciones
+
+### 1. **Update Join Condicional**
+
+```{r}
+#| label: update-join-condicional
+#| echo: true
+
+# Update join para marcar operaciones riesgosas
+# Crear tabla de límites de riesgo por ticker
+limites_riesgo <- data.table(
+  ticker = c("AAPL", "GOOGL", "MSFT", "TSLA", "AMZN"),
+  precio_max_seguro = c(200, 3000, 400, 250, 150),
+  volumen_max_seguro = c(1000, 500, 800, 2000, 1200)
+)
+
+# Hacer copia para update join
+operaciones_riesgo <- copy(operaciones_trading)
+
+# Update join condicional
+operaciones_riesgo[limites_riesgo, on = .(ticker),
+                  `:=`(
+                    precio_limite_riesgoso = i.precio_max_seguro < precio_limite,
+                    volumen_riesgoso = i.volumen_max_seguro < cantidad,
+                    limite_precio_ref = i.precio_max_seguro,
+                    limite_volumen_ref = i.volumen_max_seguro
+                  )]
+
+# Clasificar nivel de riesgo general
+operaciones_riesgo[, nivel_riesgo := fcase(
+  precio_limite_riesgoso & volumen_riesgoso, "Alto Riesgo",
+  precio_limite_riesgoso | volumen_riesgoso, "Riesgo Moderado",
+  default = "Bajo Riesgo"
+)]
+
+# Resumen de riesgos
+resumen_riesgos <- operaciones_riesgo[, .N, by = .(ticker, nivel_riesgo)][order(ticker, nivel_riesgo)]
+print("Distribución de riesgo por ticker:")
+print(resumen_riesgos)
+```
+
+### 2. **Update Join con Agregaciones Complejas**
+
+```{r}
+#| label: update-join-agregaciones
+#| echo: true
+
+# Calcular estadísticas móviles y actualizar tabla principal
+estadisticas_ticker <- operaciones_trading[,
+  .(
+    operaciones_historicas = .N,
+    precio_promedio_historico = round(mean(precio_limite), 2),
+    volumen_promedio_historico = round(mean(cantidad), 0),
+    precio_max_historico = max(precio_limite),
+    precio_min_historico = min(precio_limite),
+    ratio_compra_venta = round(mean(tipo == "COMPRA"), 2)
+  ), by = ticker]
+
+# Update join para agregar contexto histórico
+operaciones_riesgo[estadisticas_ticker, on = .(ticker),
+                  `:=`(
+                    percentil_precio = round((precio_limite - i.precio_min_historico) / 
+                                           (i.precio_max_historico - i.precio_min_historico) * 100, 1),
+                    precio_vs_promedio = round(precio_limite / i.precio_promedio_historico, 2),
+                    volumen_vs_promedio = round(cantidad / i.volumen_promedio_historico, 2),
+                    operaciones_ticker_total = i.operaciones_historicas
+                  )]
+
+print("Operaciones con contexto histórico:")
+print(head(operaciones_riesgo[, .(ticker, precio_limite, percentil_precio, 
+                                 precio_vs_promedio, volumen_vs_promedio, nivel_riesgo)], 10))
+```
+
+## Casos de Uso Complejos: Combinando Técnicas
+
+### 1. **Pipeline Completo: Finanzas**
+
+```{r}
+#| label: pipeline-finanzas-completo
+#| echo: true
+#| eval: false
+
+# Pipeline complejo que combina non-equi y rolling joins
+# Paso a paso para facilitar el debugging
+step1 <- operaciones_trading[
+  # 1. Rolling join para obtener precios históricos
+  precios_historicos, on = .(ticker, fecha_operacion = fecha), roll = TRUE
+][
+  # 2. Filtrar solo operaciones con precio disponible
+  !is.na(precio_cierre)
+][
+  # 3. Calcular métricas de trading
+  , `:=`(
+    diferencia_precio = round(precio_limite - precio_cierre, 2),
+    ratio_precio = round(precio_limite / precio_cierre, 3),
+    valor_operacion = precio_limite * cantidad
+  )
+]
+
+# Verificar columnas antes del non-equi join
+print("Columnas disponibles antes del non-equi join:")
+print(names(step1))
+
+step2 <- step1[
+  # 4. Non-equi join con eventos de mercado para ventanas temporales
+  eventos_mercado, 
+  on = .(ticker = ticker_afectado,
+         fecha_operacion >= fecha_inicio_ventana,
+         fecha_operacion <= fecha_fin_ventana),
+  allow.cartesian = TRUE
+]
+
+# Verificar columnas después del non-equi join
+print("Columnas disponibles después del non-equi join:")
+print(names(step2))
+
+# Determinar qué columna usar para ticker en la agrupación
+ticker_col <- if("ticker_afectado" %in% names(step2)) "ticker_afectado" else "ticker"
+
+# 5. Agregar análisis por evento
+if("ticker_afectado" %in% names(step2)) {
+  pipeline_financiero <- step2[
+    , .(
+      operaciones_en_ventana = .N,
+      valor_total = sum(valor_operacion),
+      precio_promedio_limite = round(mean(precio_limite), 2),
+      precio_promedio_mercado = round(mean(precio_cierre), 2),
+      spread_promedio = round(mean(abs(diferencia_precio)), 2),
+      operaciones_compra = sum(tipo == "COMPRA"),
+      operaciones_venta = sum(tipo == "VENTA")
+    ), by = .(evento_id, tipo_evento, ticker_afectado, impacto_esperado)
+  ][
+    operaciones_en_ventana >= 3  # Solo eventos con suficiente actividad
+  ][
+    order(-valor_total)
+  ]
+} else {
+  # Usar ticker en lugar de ticker_afectado
+  pipeline_financiero <- step2[
+    , .(
+      operaciones_en_ventana = .N,
+      valor_total = sum(valor_operacion),
+      precio_promedio_limite = round(mean(precio_limite), 2),
+      precio_promedio_mercado = round(mean(precio_cierre), 2),
+      spread_promedio = round(mean(abs(diferencia_precio)), 2),
+      operaciones_compra = sum(tipo == "COMPRA"),
+      operaciones_venta = sum(tipo == "VENTA")
+    ), by = .(evento_id, tipo_evento, ticker, impacto_esperado)
+  ][
+    operaciones_en_ventana >= 3  # Solo eventos con suficiente actividad
+  ][
+    order(-valor_total)
+  ]
+}
+
+print("Análisis de trading en ventanas de eventos:")
+print(head(pipeline_financiero, 10))
+
+# # Crear tabla interactiva del análisis (comentado para PDF)
+# DT::datatable(
+#   pipeline_financiero,
+#   caption = "Análisis de Trading en Ventanas de Eventos de Mercado",
+#   options = list(pageLength = 8, scrollX = TRUE)
+# ) %>%
+#   DT::formatCurrency("valor_total", currency = "$") %>%
+#   DT::formatRound(c("precio_promedio_limite", "precio_promedio_mercado", "spread_promedio"), digits = 2)
+```
+
+### 2. **Pipeline Médico Avanzado**
+
+```{r}
+#| label: pipeline-medico
+#| echo: true
+#| eval: false
+
+# Pipeline médico combinando múltiples non-equi joins
+evaluacion_medica_completa <- pacientes_clinica[
+  # Añadir columna de edad en décadas para agrupación
+  , decada := paste0(floor(edad/10)*10, "s")
+][
+  # 1. Clasificar por IMC
+  rangos_medicos[parametro == "IMC"], 
+  on = .(imc >= valor_min, imc <= valor_max),
+  .(paciente_id, nombre, edad, decada, peso, altura, imc, 
+    categoria_imc = categoria, riesgo_imc = nivel_riesgo,
+    glucosa, presion_sistolica, colesterol)
+][
+  # 2. Clasificar por glucosa  
+  rangos_medicos[parametro == "Glucosa"],
+  on = .(glucosa >= valor_min, glucosa <= valor_max),
+  .(paciente_id, nombre, edad, decada, peso, altura, imc, 
+    categoria_imc, riesgo_imc, glucosa,
+    categoria_glucosa = i.categoria, riesgo_glucosa = i.nivel_riesgo,
+    presion_sistolica, colesterol)
+][
+  # 3. Clasificar por presión
+  rangos_medicos[parametro == "Presión"],
+  on = .(presion_sistolica >= valor_min, presion_sistolica <= valor_max),
+  .(paciente_id, nombre, edad, decada, peso, altura, imc,
+    categoria_imc, riesgo_imc, glucosa, categoria_glucosa, riesgo_glucosa,
+    presion_sistolica, categoria_presion = i.categoria, riesgo_presion = i.nivel_riesgo,
+    colesterol)
+][
+  # 4. Calcular score de riesgo compuesto
+  , `:=`(
+    factores_riesgo_alto = (riesgo_imc == "Alto") + (riesgo_glucosa == "Alto") + (riesgo_presion == "Alto"),
+    factores_riesgo_total = 3,
+    score_riesgo = (
+      (riesgo_imc == "Alto") * 3 + (riesgo_imc == "Normal") * 1 +
+      (riesgo_glucosa == "Alto") * 3 + (riesgo_glucosa == "Normal") * 1 +
+      (riesgo_presion == "Alto") * 3 + (riesgo_presion == "Normal") * 1
+    )
+  )
+][
+  # 5. Clasificación final de riesgo
+  , clasificacion_final := fcase(
+    factores_riesgo_alto >= 2, "Paciente Alto Riesgo - Seguimiento Inmediato",
+    factores_riesgo_alto == 1, "Paciente Riesgo Moderado - Seguimiento Regular", 
+    score_riesgo >= 6, "Paciente Bajo Riesgo - Seguimiento Rutinario",
+    default = "Paciente Muy Bajo Riesgo - Seguimiento Anual"
+  )
+][
+  order(-score_riesgo)
+]
+
+# Resumen por grupo de edad
+resumen_por_decada <- evaluacion_medica_completa[,
+  .(
+    pacientes = .N,
+    edad_promedio = round(mean(edad), 1),
+    imc_promedio = round(mean(imc), 1),
+    alto_riesgo = sum(factores_riesgo_alto >= 2),
+    riesgo_moderado = sum(factores_riesgo_alto == 1),
+    bajo_riesgo = sum(factores_riesgo_alto == 0),
+    score_riesgo_promedio = round(mean(score_riesgo), 1)
+  ), by = decada][order(decada)]
+
+print("Resumen de evaluación médica por década:")
+print(resumen_por_decada)
+
+print("\nPacientes de mayor riesgo:")
+print(head(evaluacion_medica_completa[factores_riesgo_alto >= 2, 
+                                     .(nombre, edad, factores_riesgo_alto, score_riesgo, clasificacion_final)], 8))
+```
+
+## Ejercicios Prácticos
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 10: Sistema de Alertas de Trading
+
+Usando los datasets de precios y operaciones:
+
+1. **Rolling join** para obtener precios en tiempo real
+2. **Non-equi join** para identificar operaciones en rangos de volatilidad alta
+3. **Update join** para calcular PnL potencial 
+4. **Crear sistema de alertas** basado en múltiples condiciones
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 10
+
+```{r}
+#| label: solucion-ejercicio-10
+#| echo: true
+
+# Sistema completo de alertas de trading
+# 1. Calcular volatilidad histórica
+volatilidad_historica <- precios_historicos[order(ticker, fecha)][,
+  .(fecha, volatilidad_10d = frollapply(precio_cierre, 10, sd, na.rm = TRUE)),
+  by = ticker][!is.na(volatilidad_10d)]
+
+# 2. Definir rangos de volatilidad para non-equi join
+rangos_volatilidad <- data.table(
+  nivel = c("Baja", "Media", "Alta", "Extrema"),
+  vol_min = c(0, 5, 15, 30),
+  vol_max = c(5, 15, 30, Inf),
+  factor_riesgo = c(1, 2, 3, 4)
+)
+
+# 3. Pipeline completo del sistema de alertas
+sistema_alertas <- operaciones_trading[
+  # Rolling join con precios históricos
+  precios_historicos, on = .(ticker, fecha_operacion = fecha), roll = TRUE
+][
+  !is.na(precio_cierre)  # Solo operaciones con precio disponible
+][
+  # Rolling join con volatilidad
+  volatilidad_historica, on = .(ticker, fecha_operacion = fecha), roll = TRUE
+][
+  !is.na(volatilidad_10d)  # Solo con volatilidad calculada
+][
+  # Non-equi join para clasificar por volatilidad
+  rangos_volatilidad, on = .(volatilidad_10d >= vol_min, volatilidad_10d <= vol_max),
+  .(operacion_id, ticker, fecha_operacion, tipo, cantidad, precio_limite, precio_cierre,
+    volatilidad_10d, nivel_volatilidad = nivel, factor_riesgo)
+][
+  # 4. Calcular métricas de riesgo y PnL potencial
+  , `:=`(
+    diferencia_precio = precio_limite - precio_cierre,
+    pnl_potencial_pct = round((precio_limite - precio_cierre) / precio_cierre * 100, 2),
+    valor_operacion = precio_limite * cantidad,
+    riesgo_volatilidad = volatilidad_10d * factor_riesgo,
+    spread_pct = round(abs(precio_limite - precio_cierre) / precio_cierre * 100, 2)
+  )
+][
+  # 5. Sistema de alertas basado en múltiples condiciones
+  , alerta_tipo := fcase(
+    # Alerta crítica: alta volatilidad + spread alto + operación grande
+    nivel_volatilidad %in% c("Alta", "Extrema") & spread_pct > 5 & valor_operacion > 100000,
+    "CRÍTICA - Alta Volatilidad + Spread Alto + Volumen Alto",
+    
+    # Alerta alta: precio muy diferente del mercado
+    abs(pnl_potencial_pct) > 10 & valor_operacion > 50000,
+    "ALTA - Precio Fuera de Rango + Volumen Significativo",
+    
+    # Alerta media: volatilidad alta
+    nivel_volatilidad %in% c("Alta", "Extrema") & valor_operacion > 25000,
+    "MEDIA - Alta Volatilidad",
+    
+    # Alerta baja: spread moderado
+    spread_pct > 3 & valor_operacion > 10000,
+    "BAJA - Spread Moderado",
+    
+    default = "SIN ALERTA"
+  )
+][
+  # 6. Filtrar solo operaciones con alertas
+  alerta_tipo != "SIN ALERTA"
+][
+  order(-riesgo_volatilidad, -valor_operacion)
+][
+  # 7. Agregar prioridad numérica para ordenamiento
+  , prioridad := fcase(
+    grepl("CRÍTICA", alerta_tipo), 1,
+    grepl("ALTA", alerta_tipo), 2, 
+    grepl("MEDIA", alerta_tipo), 3,
+    grepl("BAJA", alerta_tipo), 4,
+    default = 5
+  )
+][
+  order(prioridad, -valor_operacion)
+]
+
+# Dashboard de alertas
+cat("🚨 SISTEMA DE ALERTAS DE TRADING 🚨\n\n")
+
+# Resumen por tipo de alerta
+resumen_alertas <- sistema_alertas[, .(
+  operaciones = .N,
+  valor_total = sum(valor_operacion),
+  volatilidad_promedio = round(mean(volatilidad_10d), 2),
+  spread_promedio = round(mean(spread_pct), 2)
+), by = .(alerta_tipo, prioridad)][order(prioridad)]
+
+print("RESUMEN DE ALERTAS:")
+print(resumen_alertas)
+
+cat("\n📊 TOP 10 OPERACIONES DE MAYOR RIESGO:\n")
+print(sistema_alertas[1:10, .(
+  Ticker = ticker, 
+  Tipo = tipo,
+  Valor = paste0("$", format(valor_operacion, big.mark = ",")),
+  Spread = paste0(spread_pct, "%"),
+  Volatilidad = paste0(round(volatilidad_10d, 1)),
+  Alerta = alerta_tipo
+)])
+
+# # Crear tabla interactiva (comentado para PDF)
+# DT::datatable(
+#   sistema_alertas[1:20],
+#   caption = "Sistema de Alertas de Trading - Top 20 Operaciones de Riesgo",
+#   options = list(pageLength = 10, scrollX = TRUE)
+# ) %>%
+#   DT::formatCurrency("valor_operacion", currency = "$") %>%
+#   DT::formatRound(c("volatilidad_10d", "spread_pct"), digits = 2) %>%
+#   DT::formatStyle(
+#     "alerta_tipo",
+#     backgroundColor = DT::styleEqual(
+#       c("CRÍTICA - Alta Volatilidad + Spread Alto + Volumen Alto",
+#         "ALTA - Precio Fuera de Rango + Volumen Significativo", 
+#         "MEDIA - Alta Volatilidad",
+#         "BAJA - Spread Moderado"),
+#       c("red", "orange", "yellow", "lightblue")
+#     )
+#   )
+```
+:::
+
+## Mejores Prácticas para Joins Avanzados
+
+### 1. **Performance y Optimización**
+
+```{r}
+#| label: mejores-practicas-performance
+#| echo: true
+#| eval: false
+
+# ✅ HACER: Establecer keys antes de rolling joins repetitivos
+setkey(tabla_temporal, id, timestamp)
+setkey(tabla_eventos, id, fecha_evento)
+resultado <- tabla_temporal[tabla_eventos, roll = TRUE]
+
+# ✅ HACER: Filtrar antes de joins complejos
+tabla_filtrada <- tabla_grande[fecha >= fecha_inicio & fecha <= fecha_fin]
+resultado <- tabla_filtrada[otra_tabla, on = .(columna)]
+
+# ✅ HACER: Usar nomatch = NULL para inner joins en non-equi
+resultado <- tabla1[tabla2, on = .(col1 >= min_val, col1 <= max_val), nomatch = NULL]
+
+# ❌ EVITAR: Non-equi joins sin filtros previos en tablas enormes
+# Puede generar productos cartesianos masivos
+```
+
+### 2. **Manejo de Casos Edge**
+
+```{r}
+#| label: mejores-practicas-edge-cases
+#| echo: true
+#| eval: false
+
+# ✅ HACER: Validar resultados de rolling joins
+resultado <- tabla1[tabla2, roll = TRUE]
+cat("Matches encontrados:", sum(!is.na(resultado$columna_tabla1)), "\n")
+cat("Matches perdidos:", sum(is.na(resultado$columna_tabla1)), "\n")
+
+# ✅ HACER: Establecer límites razonables en rolling joins
+resultado <- tabla1[tabla2, roll = 7]  # máximo 7 unidades de tiempo
+
+# ✅ HACER: Verificar cartesian products en non-equi joins
+if(nrow(resultado) > nrow(tabla2) * 2) {
+  warning("Posible cartesian product no deseado")
+}
+```
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **Non-equi joins** permiten uniones basadas en rangos y desigualdades - perfectos para clasificaciones médicas y financieras
+2. **Rolling joins** son esenciales para series temporales - conectan cada punto con el último valor disponible
+3. **Combinar técnicas** (non-equi + rolling + update) permite análisis muy sofisticados
+4. **Performance**: Establecer keys apropiadas es crucial para joins avanzados
+5. **Validación**: Siempre verificar resultados para evitar cartesian products no deseados
+6. **Casos de uso reales**: Finanzas, medicina, IoT - cualquier dominio con rangos temporales o de valores
+:::
+
+Los joins avanzados son herramientas poderosas que abren posibilidades analíticas únicas. En el próximo capítulo exploraremos las funciones especiales que complementan estos joins para análisis aún más sofisticados.
+
+<function_calls>
+<invoke name="TodoWrite">
+<parameter name="todos">[{"content": "Reorganizar M\u00f3dulo 1: dividir fundamentos en sintaxis y s\u00edmbolos", "status": "completed", "id": "1"}, {"content": "Crear cap01-simbolos.qmd para s\u00edmbolos especiales del M\u00f3dulo 1", "status": "completed", "id": "1-new"}, {"content": "Reorganizar M\u00f3dulo 2: dividir en encadenamiento y joins", "status": "completed", "id": "2"}, {"content": "Crear cap03-joins-avanzados.qmd para joins avanzados del M\u00f3dulo 3", "status": "completed", "id": "3-1"}, {"content": "Crear cap03-funciones-especiales.qmd para funciones especiales del M\u00f3dulo 3", "status": "in_progress", "id": "3-2"}, {"content": "Crear cap03-reshape.qmd para reshape del M\u00f3dulo 3", "status": "pending", "id": "3-3"}, {"content": "Reorganizar M\u00f3dulo 4: dividir en performance y buenas pr\u00e1cticas", "status": "pending", "id": "4"}, {"content": "Reorganizar M\u00f3dulo 5: dividir en visualizaci\u00f3n y aplicaciones", "status": "pending", "id": "5"}]

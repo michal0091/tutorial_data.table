@@ -1,0 +1,692 @@
+# Símbolos Especiales en `data.table`
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **`.SD`**: El Subset of Data para operaciones por grupo
+- **`.SDcols`**: Control granular de columnas con `.SD`
+- **`.I`**: Índices de fila para operaciones avanzadas
+- **`.GRP`**: Identificadores de grupo únicos
+- **`.N`**: Contador universal (repaso avanzado)
+- Casos de uso complejos y patrones profesionales
+:::
+
+```{r}
+#| label: setup-cap01-simbolos
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(knitr)
+library(DT)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datos de ejemplo más complejos
+set.seed(789)
+empleados_avanzado <- data.table(
+  id = 1:20,
+  nombre = paste0("Empleado_", LETTERS[1:20]),
+  departamento = rep(c("Ventas", "IT", "Marketing", "RRHH", "Finanzas"), each = 4),
+  nivel = rep(c("Junior", "Senior", "Lead", "Manager"), times = 5),
+  salario_base = round(runif(20, 30000, 80000), -2),
+  bonus = round(runif(20, 0, 15000), -2),
+  años_exp = sample(1:15, 20, replace = TRUE),
+  certificaciones = sample(0:5, 20, replace = TRUE),
+  proyectos_completados = sample(5:50, 20, replace = TRUE),
+  rating_performance = round(runif(20, 3, 5), 1),
+  fecha_ingreso = sample(seq(as.Date("2015-01-01"), as.Date("2023-12-31"), by = "month"), 20),
+  activo = sample(c(TRUE, FALSE), 20, replace = TRUE, prob = c(0.85, 0.15))
+)
+
+# Calcular métricas derivadas
+empleados_avanzado[, `:=`(
+  salario_total = salario_base + bonus,
+  experiencia_categoria = cut(años_exp, breaks = c(0, 3, 7, 15), labels = c("Junior", "Mid", "Senior")),
+  productividad = round(proyectos_completados / años_exp, 2),
+  valor_empleado = round((salario_base + bonus) * rating_performance * años_exp / 1000, 2)
+)]
+
+# Dataset de transacciones para ejemplos más complejos
+transacciones <- data.table(
+  transaction_id = 1:1000,
+  cliente_id = sample(1:100, 1000, replace = TRUE),
+  producto_id = sample(LETTERS[1:10], 1000, replace = TRUE),
+  categoria = sample(c("Electronics", "Clothing", "Books", "Sports"), 1000, replace = TRUE),
+  fecha = sample(seq(as.Date("2023-01-01"), as.Date("2023-12-31"), by = "day"), 1000, replace = TRUE),
+  monto = round(runif(1000, 10, 500), 2),
+  descuento = round(runif(1000, 0, 0.3), 2),
+  canal = sample(c("Online", "Store", "Mobile"), 1000, replace = TRUE, prob = c(0.5, 0.3, 0.2)),
+  vendedor_id = sample(1:20, 1000, replace = TRUE)
+)
+
+# Métricas por transacción
+transacciones[, `:=`(
+  monto_final = monto * (1 - descuento),
+  mes = month(fecha),
+  trimestre = quarter(fecha),
+  tipo_cliente = ifelse(cliente_id <= 20, "Premium", ifelse(cliente_id <= 50, "Regular", "Basic"))
+)]
+```
+
+## El Símbolo `.SD`: Subset of Data
+
+`.SD` es quizás el símbolo más poderoso de `data.table`. Contiene todas las columnas del grupo actual (excepto las variables de agrupación) como un `data.table` en sí mismo.
+
+### 1. **Conceptos Fundamentales de `.SD`**
+
+```{r}
+#| label: SD-conceptos
+#| echo: true
+
+# Veamos qué contiene .SD
+empleados_avanzado[, {
+  cat("Grupo:", unique(departamento), "\n")
+  cat("Columnas en .SD:", names(.SD), "\n")
+  cat("Filas en .SD:", nrow(.SD), "\n\n")
+  # Devolver algo para que funcione el data.table
+  .N
+}, by = departamento]
+```
+
+```{r}
+#| label: SD-estructura
+#| echo: true
+
+# Ejemplo práctico: estadísticas de salario por departamento
+stats_salarios <- empleados_avanzado[, {
+  list(
+    empleados = .N,
+    salario_promedio = round(mean(.SD$salario_total), 0),
+    salario_mediana = round(median(.SD$salario_total), 0),
+    salario_max = max(.SD$salario_total),
+    salario_min = min(.SD$salario_total),
+    rango_salario = max(.SD$salario_total) - min(.SD$salario_total)
+  )
+}, by = departamento]
+
+print(stats_salarios)
+```
+
+### 2. **Aplicar Funciones con `lapply(.SD, ...)`**
+
+El verdadero poder de `.SD` surge cuando lo combinas con `lapply()` para aplicar funciones a múltiples columnas:
+
+```{r}
+#| label: SD-lapply-basico
+#| echo: true
+
+# Aplicar mean() a todas las columnas numéricas por departamento
+medias_por_dept <- empleados_avanzado[, 
+  lapply(.SD, mean, na.rm = TRUE), 
+  by = departamento,
+  .SDcols = is.numeric  # Solo columnas numéricas
+]
+
+print(medias_por_dept)
+```
+
+```{r}
+#| label: SD-lapply-avanzado
+#| echo: true
+
+# Múltiples estadísticas por grupo usando funciones personalizadas
+estadisticas_avanzadas <- empleados_avanzado[, 
+  lapply(.SD, function(x) {
+    if(is.numeric(x)) {
+      list(
+        media = round(mean(x, na.rm = TRUE), 2),
+        mediana = round(median(x, na.rm = TRUE), 2),
+        desv_std = round(sd(x, na.rm = TRUE), 2),
+        cv = round(sd(x, na.rm = TRUE) / mean(x, na.rm = TRUE), 3)
+      )
+    } else {
+      list(valores_unicos = length(unique(x)))
+    }
+  }),
+  by = departamento,
+  .SDcols = c("salario_total", "años_exp", "rating_performance")
+]
+
+print(estadisticas_avanzadas)
+```
+
+### 3. **Transformaciones Complejas con `.SD`**
+
+```{r}
+#| label: SD-transformaciones
+#| echo: true
+
+# Normalizar columnas dentro de cada departamento (Z-score)
+empleados_normalizados <- empleados_avanzado[,
+  c(.SD[, 1:2], lapply(.SD[, -(1:2)], function(x) {
+    if(is.numeric(x) && length(unique(x)) > 1) {
+      round((x - mean(x)) / sd(x), 3)
+    } else {
+      x
+    }
+  })),
+  by = departamento
+][order(departamento, id)]
+
+# Mostrar solo algunas columnas para claridad
+print(empleados_normalizados[, .(departamento, nombre, salario_total, años_exp, rating_performance)])
+```
+
+## Control de Columnas con `.SDcols`
+
+`.SDcols` te permite especificar exactamente qué columnas debe incluir `.SD`.
+
+### 1. **Formas de Especificar `.SDcols`**
+
+```{r}
+#| label: SDcols-formas
+#| echo: true
+
+# Por nombres de columna
+por_nombres <- empleados_avanzado[,
+  lapply(.SD, mean),
+  by = departamento,
+  .SDcols = c("salario_total", "años_exp", "rating_performance")
+]
+
+# Por patrones
+por_patrones <- empleados_avanzado[,
+  lapply(.SD, max),
+  by = departamento,
+  .SDcols = patterns("salario|rating")
+]
+
+# Por tipo de datos
+por_tipo <- empleados_avanzado[,
+  lapply(.SD, function(x) length(unique(x))),
+  by = departamento,
+  .SDcols = is.character
+]
+
+print("Por nombres:")
+print(por_nombres)
+print("\nPor patrones:")
+print(por_patrones)
+print("\nPor tipo (character):")
+print(por_tipo)
+```
+
+### 2. **Casos de Uso Avanzados de `.SDcols`**
+
+```{r}
+#| label: SDcols-avanzado
+#| echo: true
+
+# Análisis de correlaciones por departamento
+correlaciones_dept <- empleados_avanzado[activo == TRUE,  # Solo empleados activos
+{
+  # Seleccionar solo columnas numéricas con variabilidad
+  cols_numericas <- sapply(.SD, function(x) is.numeric(x) && var(x, na.rm = TRUE) > 0)
+  nombres_cols_validas <- names(cols_numericas)[cols_numericas]
+  
+  if(length(nombres_cols_validas) >= 2) {
+    cor_matrix <- cor(.SD[, nombres_cols_validas, with = FALSE])
+    # Extraer correlación específica: salario vs rating (si ambas existen)
+    if("salario_total" %in% nombres_cols_validas && "rating_performance" %in% nombres_cols_validas) {
+      correlacion_sal_rating <- round(cor_matrix["salario_total", "rating_performance"], 3)
+    } else {
+      correlacion_sal_rating <- NA
+    }
+    list(
+      correlacion_salario_rating = correlacion_sal_rating,
+      num_variables = length(nombres_cols_validas)
+    )
+  } else {
+    list(correlacion_salario_rating = NA, num_variables = length(nombres_cols_validas))
+  }
+},
+by = departamento,
+.SDcols = is.numeric
+]
+
+print(correlaciones_dept)
+```
+
+```{r}
+#| label: SDcols-dinamico
+#| echo: true
+
+# Selección dinámica de columnas basada en criterios
+columnas_con_variacion <- empleados_avanzado[, 
+  sapply(.SD, function(x) if(is.numeric(x)) var(x, na.rm = TRUE) > 1000 else FALSE),
+  .SDcols = is.numeric
+]
+
+print("Columnas con alta variación:")
+print(names(columnas_con_variacion)[columnas_con_variacion])
+
+# Usar esas columnas para análisis
+analisis_alta_variacion <- empleados_avanzado[,
+  lapply(.SD, function(x) c(min = min(x), max = max(x), rango = max(x) - min(x))),
+  .SDcols = names(columnas_con_variacion)[columnas_con_variacion]
+]
+
+print(analisis_alta_variacion)
+```
+
+## El Símbolo `.I`: Índices de Fila
+
+`.I` contiene los índices (números de fila) de las observaciones del grupo actual en el `data.table` original.
+
+### 1. **Usos Básicos de `.I`**
+
+```{r}
+#| label: I-basico
+#| echo: true
+
+# Encontrar el índice del empleado con mayor salario por departamento
+indices_top_salario <- empleados_avanzado[,
+  .I[which.max(salario_total)],
+  by = departamento
+]
+
+print("Índices de empleados con mayor salario:")
+print(indices_top_salario)
+
+# Usar esos índices para extraer las filas completas
+top_empleados_por_dept <- empleados_avanzado[indices_top_salario$V1]
+print("\nEmpleados con mayor salario por departamento:")
+print(top_empleados_por_dept[, .(departamento, nombre, salario_total)])
+```
+
+### 2. **Casos de Uso Avanzados con `.I`**
+
+```{r}
+#| label: I-avanzado
+#| echo: true
+
+# Top N empleados por departamento
+top_2_por_dept <- empleados_avanzado[,
+  .I[order(-salario_total)][1:min(2, .N)],  # Top 2 o todos si hay menos de 2
+  by = departamento
+]
+
+empleados_top2 <- empleados_avanzado[top_2_por_dept$V1]
+print("Top 2 empleados por departamento:")
+print(empleados_top2[, .(departamento, nombre, salario_total)][order(departamento, -salario_total)])
+```
+
+```{r}
+#| label: I-muestreo
+#| echo: true
+
+# Muestreo estratificado usando .I
+set.seed(123)
+muestra_estratificada <- empleados_avanzado[,
+  .I[sample(.N, size = min(2, .N))],  # 2 empleados por departamento
+  by = departamento
+]
+
+empleados_muestra <- empleados_avanzado[muestra_estratificada$V1]
+print("Muestra estratificada:")
+print(empleados_muestra[, .(departamento, nombre, años_exp)])
+```
+
+## El Símbolo `.GRP`: Identificador de Grupo
+
+`.GRP` es un contador que asigna un número único e incremental a cada grupo.
+
+### 1. **Usos de `.GRP`**
+
+```{r}
+#| label: GRP-basico
+#| echo: true
+
+# Asignar ID único a cada departamento
+empleados_con_grupo <- empleados_avanzado[,
+  .(nombre, departamento, grupo_id = .GRP, empleados_en_grupo = .N),
+  by = departamento
+]
+
+print(empleados_con_grupo)
+```
+
+```{r}
+#| label: GRP-avanzado
+#| echo: true
+
+# Análisis de transacciones por grupo de cliente
+analisis_grupos <- transacciones[,
+  .(
+    grupo_cliente = .GRP,
+    num_transacciones = .N,
+    monto_promedio = round(mean(monto_final), 2),
+    primera_compra = min(fecha),
+    ultima_compra = max(fecha)
+  ),
+  by = tipo_cliente
+]
+
+print(analisis_grupos)
+```
+
+## Combinando Símbolos: Casos de Uso Profesionales
+
+### 1. **Análisis de Cohortes**
+
+```{r}
+#| label: cohort-analysis
+#| echo: true
+
+# Análisis de cohortes de empleados por año de ingreso
+library(lubridate)
+
+analisis_cohortes <- empleados_avanzado[,
+  .(
+    cohorte_id = .GRP,
+    año_ingreso = year(min(fecha_ingreso)),
+    empleados_iniciales = .N,
+    salario_inicial_promedio = round(mean(salario_base), 0),
+    retencion_actual = round(mean(activo) * 100, 1),
+    performance_promedio = round(mean(rating_performance), 2),
+    # Usando .SD para métricas adicionales
+    experiencia_rango = paste0(min(.SD$años_exp), "-", max(.SD$años_exp), " años")
+  ),
+  by = .(año_cohorte = year(fecha_ingreso)),
+  .SDcols = "años_exp"
+][order(año_cohorte)]
+
+print(analisis_cohortes)
+```
+
+### 2. **Detección de Outliers por Grupo**
+
+```{r}
+#| label: outliers-detection
+#| echo: true
+
+# Detectar outliers en salario dentro de cada departamento
+outliers_salario <- empleados_avanzado[,
+{
+  Q1 <- quantile(salario_total, 0.25)
+  Q3 <- quantile(salario_total, 0.75)
+  IQR <- Q3 - Q1
+  limite_inferior <- Q1 - 1.5 * IQR
+  limite_superior <- Q3 + 1.5 * IQR
+  
+  outliers_indices <- .I[salario_total < limite_inferior | salario_total > limite_superior]
+  
+  list(
+    departamento = unique(departamento),
+    num_outliers = length(outliers_indices),
+    outliers_ids = if(length(outliers_indices) > 0) list(outliers_indices) else list(integer(0)),
+    limite_inf = round(limite_inferior, 0),
+    limite_sup = round(limite_superior, 0)
+  )
+},
+by = departamento
+]
+
+print(outliers_salario)
+
+# Extraer los outliers reales
+outliers_reales <- unique(unlist(outliers_salario$outliers_ids))
+if(length(outliers_reales) > 0) {
+  empleados_outliers <- empleados_avanzado[outliers_reales]
+  print("\nEmpleados con salarios outliers:")
+  print(empleados_outliers[, .(nombre, departamento, salario_total)])
+}
+```
+
+### 3. **Ventana Móvil con `.SD`**
+
+```{r}
+#| label: rolling-window
+#| echo: true
+
+# Análisis de ventana móvil en transacciones
+# Primero ordenamos por fecha
+transacciones_ordenadas <- transacciones[order(fecha)]
+
+# Crear grupos por mes para simular ventana temporal
+ventana_movil <- transacciones_ordenadas[,
+{
+  # Para cada mes, calcular métricas usando .SD
+  current_data <- .SD
+  list(
+    mes = unique(mes),
+    transacciones_mes = .N,
+    monto_total = sum(monto_final),
+    ticket_promedio = round(mean(monto_final), 2),
+    # Diversidad de productos
+    productos_unicos = uniqueN(producto_id),
+    # Análisis de canales usando .SD
+    canal_dominante = names(sort(table(.SD$canal), decreasing = TRUE))[1],
+    concentracion_clientes = round(1 - (uniqueN(cliente_id) / .N), 3)  # Índice de concentración
+  )
+},
+by = .(año = year(fecha), mes),
+.SDcols = c("monto_final", "producto_id", "canal", "cliente_id")
+][order(año, mes)]
+
+print(ventana_movil)
+```
+
+## Ejercicios Prácticos
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 5: Análisis Multidimensional con Símbolos Especiales
+
+Usando el dataset `transacciones`, crea un análisis que utilice todos los símbolos especiales:
+
+1. **Con `.SD`**: Calcula estadísticas de monto por categoría y canal
+2. **Con `.SDcols`**: Analiza solo columnas que contengan "monto" o "descuento" 
+3. **Con `.I`**: Encuentra las 3 mejores transacciones por categoría
+4. **Con `.GRP`**: Asigna IDs únicos a combinaciones categoría-canal
+5. **Análisis combinado**: Crea un reporte complejo que use múltiples símbolos
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 5
+
+```{r}
+#| label: solucion-ejercicio-5
+#| echo: true
+
+# 1. Estadísticas con .SD por categoría y canal
+estadisticas_SD <- transacciones[,
+  lapply(.SD, function(x) {
+    if(is.numeric(x)) {
+      list(
+        promedio = round(mean(x, na.rm = TRUE), 2),
+        mediana = round(median(x, na.rm = TRUE), 2),
+        desv_std = round(sd(x, na.rm = TRUE), 2)
+      )
+    } else {
+      list(valores_unicos = length(unique(x)))
+    }
+  }),
+  by = .(categoria, canal),
+  .SDcols = c("monto", "monto_final", "descuento")
+]
+
+print("1. Estadísticas por categoría y canal:")
+print(head(estadisticas_SD, 8))
+
+# 2. Análisis con .SDcols específicas
+analisis_montos <- transacciones[,
+  lapply(.SD, function(x) c(
+    min = min(x),
+    max = max(x),
+    rango = max(x) - min(x),
+    coef_var = sd(x) / mean(x)
+  )),
+  by = categoria,
+  .SDcols = patterns("monto|descuento")
+]
+
+print("\n2. Análisis de montos y descuentos:")
+print(analisis_montos)
+
+# 3. Top 3 transacciones por categoría usando .I
+indices_top3 <- transacciones[,
+  .I[order(-monto_final)][1:min(3, .N)],
+  by = categoria
+]
+
+top3_transacciones <- transacciones[indices_top3$V1]
+print("\n3. Top 3 transacciones por categoría:")
+print(top3_transacciones[, .(categoria, transaction_id, monto_final, producto_id)][order(categoria, -monto_final)])
+
+# 4. IDs únicos con .GRP
+grupos_categoria_canal <- transacciones[,
+  .(
+    grupo_id = .GRP,
+    transacciones = .N,
+    monto_promedio = round(mean(monto_final), 2)
+  ),
+  by = .(categoria, canal)
+][order(grupo_id)]
+
+print("\n4. IDs de grupos categoría-canal:")
+print(grupos_categoria_canal)
+
+# 5. Análisis combinado ultra-avanzado
+analisis_completo <- transacciones[,
+{
+  # Usar todos los símbolos en un análisis complejo
+  grupo_id <- .GRP
+  num_trans <- .N
+  
+  # Estadísticas básicas con .SD
+  stats_basicas <- lapply(.SD[, .(monto_final, descuento)], function(x) {
+    c(media = mean(x), mediana = median(x))
+  })
+  
+  # Top performer con .I
+  top_transaction_idx <- .I[which.max(monto_final)]
+  
+  # Análisis de clientes
+  clientes_unicos <- uniqueN(cliente_id)
+  cliente_top <- cliente_id[which.max(monto_final)]
+  
+  list(
+    grupo_id = grupo_id,
+    categoria = unique(categoria),
+    canal = unique(canal),
+    num_transacciones = num_trans,
+    monto_promedio = round(stats_basicas$monto_final["media"], 2),
+    monto_mediana = round(stats_basicas$monto_final["mediana"], 2),
+    descuento_promedio = round(stats_basicas$descuento["media"], 3),
+    clientes_unicos = clientes_unicos,
+    concentracion = round(1 - (clientes_unicos / num_trans), 3),
+    top_transaction_id = transacciones[top_transaction_idx, transaction_id],
+    top_cliente_id = cliente_top,
+    diversidad_productos = uniqueN(producto_id)
+  )
+},
+by = .(categoria, canal),
+.SDcols = c("monto_final", "descuento", "cliente_id", "producto_id")
+][order(-monto_promedio)]
+
+print("\n5. Análisis completo combinando todos los símbolos:")
+print(analisis_completo)
+
+# Mostrar tabla final formateada para PDF
+knitr::kable(
+  analisis_completo,
+  caption = "Análisis Completo por Categoría y Canal",
+  digits = 2,
+  format.args = list(big.mark = ",")
+)
+```
+:::
+
+## Patrones Avanzados y Mejores Prácticas
+
+### 1. **Funciones Personalizadas con `.SD`**
+
+```{r}
+#| label: funciones-personalizadas
+#| echo: true
+
+# Crear función personalizada para análisis estadístico
+analisis_estadistico <- function(dt, by_vars, numeric_cols) {
+  dt[,
+    lapply(.SD, function(x) {
+      if(is.numeric(x) && length(unique(x)) > 1) {
+        list(
+          n = length(x),
+          media = round(mean(x, na.rm = TRUE), 2),
+          mediana = round(median(x, na.rm = TRUE), 2),
+          q25 = round(quantile(x, 0.25, na.rm = TRUE), 2),
+          q75 = round(quantile(x, 0.75, na.rm = TRUE), 2),
+          desv_std = round(sd(x, na.rm = TRUE), 2),
+          cv = round(sd(x, na.rm = TRUE) / mean(x, na.rm = TRUE), 3),
+          asimetria = round((mean(x) - median(x)) / sd(x), 3)
+        )
+      } else {
+        list(valores_unicos = length(unique(x)))
+      }
+    }),
+    by = by_vars,
+    .SDcols = numeric_cols
+  ]
+}
+
+# Aplicar la función
+resultado_personalizado <- analisis_estadistico(
+  empleados_avanzado,
+  by_vars = "departamento",
+  numeric_cols = c("salario_total", "años_exp", "rating_performance")
+)
+
+print(resultado_personalizado)
+```
+
+### 2. **Optimización de Performance**
+
+```{r}
+#| label: performance-tips
+#| echo: true
+#| eval: false
+
+# ✅ HACER: Usar .SDcols para limitar columnas
+# Más eficiente
+empleados[, lapply(.SD, mean), by = dept, .SDcols = c("sal", "exp")]
+
+# ❌ NO HACER: Procesar todas las columnas innecesariamente
+# Menos eficiente
+empleados[, lapply(.SD, mean), by = dept]
+
+# ✅ HACER: Combinar operaciones en una sola expresión
+# Más eficiente
+empleados[, {
+  list(
+    media_sal = mean(salario),
+    max_exp = max(años_exp),
+    grupo_id = .GRP
+  )
+}, by = dept]
+
+# ❌ NO HACER: Múltiples pasadas por los datos
+# Menos eficiente
+media_sal <- empleados[, mean(salario), by = dept]
+max_exp <- empleados[, max(años_exp), by = dept]
+```
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **`.SD`** es un mini-data.table con los datos del grupo actual - úsalo con `lapply()` para operaciones múltiples
+2. **`.SDcols`** controla qué columnas incluye `.SD` - esencial para performance y precisión
+3. **`.I`** te da los índices reales - perfecto para top-N, muestreo y filtrado avanzado
+4. **`.GRP`** asigna IDs únicos a grupos - útil para tracking y análisis de cohortes
+5. **Combinar símbolos** permite análisis complejos en una sola expresión
+6. **Performance**: Limita `.SDcols` y combina operaciones para máxima eficiencia
+:::
+
+Con el dominio de estos símbolos especiales, tienes las herramientas para realizar análisis de datos sofisticados y eficientes. En el próximo módulo exploraremos técnicas de manipulación intermedia como encadenamiento y joins.
+
+<function_calls>
+<invoke name="TodoWrite">
+<parameter name="todos">[{"content": "Reorganizar M\u00f3dulo 1: dividir fundamentos en sintaxis y s\u00edmbolos", "status": "completed", "id": "1"}, {"content": "Crear cap01-simbolos.qmd para s\u00edmbolos especiales del M\u00f3dulo 1", "status": "completed", "id": "1-new"}, {"content": "Reorganizar M\u00f3dulo 2: dividir en encadenamiento y joins", "status": "in_progress", "id": "2"}, {"content": "Reorganizar M\u00f3dulo 3: dividir en joins avanzados, funciones especiales y reshape", "status": "pending", "id": "3"}, {"content": "Reorganizar M\u00f3dulo 4: dividir en performance y buenas pr\u00e1cticas", "status": "pending", "id": "4"}, {"content": "Reorganizar M\u00f3dulo 5: dividir en visualizaci\u00f3n y aplicaciones", "status": "pending", "id": "5"}]

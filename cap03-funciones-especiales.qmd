@@ -1,0 +1,916 @@
+# Funciones Especiales y Análisis Temporal
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **Funciones de ventana**: `shift()`, `frollmean()`, `frollapply()`
+- **Funciones condicionales rápidas**: `fifelse()`, `fcase()`, `between()`
+- **Análisis temporal avanzado** con series de tiempo
+- **Funciones de agregación especiales**: `frank()`, `rleid()`, `uniqueN()`
+- **Operaciones con strings** optimizadas para data.table
+- **Análisis de supervivencia** y detección de patrones
+:::
+
+```{r}
+#| label: setup-cap03-funciones-especiales
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(knitr)
+library(DT)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets para funciones especiales
+set.seed(2024)
+
+# Dataset financiero para análisis temporal
+precios_diarios <- data.table(
+  fecha = rep(seq(as.Date("2024-01-01"), as.Date("2024-06-30"), by = "day"), 4),
+  ticker = rep(c("AAPL", "GOOGL", "MSFT", "NVDA"), each = 182),
+  precio_apertura = round(c(
+    cumsum(rnorm(182, 0.2, 2)) + 180,   # AAPL
+    cumsum(rnorm(182, 0.1, 10)) + 2800, # GOOGL
+    cumsum(rnorm(182, 0.3, 3)) + 370,   # MSFT
+    cumsum(rnorm(182, 1.0, 15)) + 600   # NVDA tendencia alcista
+  ), 2),
+  volumen = round(runif(728, 500000, 20000000), 0)
+)
+
+# Calcular precios derivados
+precios_diarios[, `:=`(
+  precio_cierre = precio_apertura + rnorm(.N, 0, 2),
+  precio_max = precio_apertura + abs(rnorm(.N, 2, 1)),
+  precio_min = precio_apertura - abs(rnorm(.N, 1, 0.5))
+)]
+
+# Asegurar lógica de precios
+precios_diarios[, `:=`(
+  precio_cierre = pmax(precio_min, pmin(precio_max, precio_cierre)),
+  precio_max = pmax(precio_apertura, precio_cierre, precio_max),
+  precio_min = pmin(precio_apertura, precio_cierre, precio_min)
+)]
+
+# Dataset de clientes para análisis de supervivencia
+clientes_retencion <- data.table(
+  cliente_id = 1:1000,
+  fecha_registro = sample(seq(as.Date("2023-01-01"), as.Date("2024-01-01"), by = "day"), 1000, replace = TRUE),
+  plan = sample(c("Básico", "Premium", "Empresarial"), 1000, replace = TRUE, prob = c(0.6, 0.3, 0.1)),
+  edad = sample(18:75, 1000, replace = TRUE),
+  pais = sample(c("España", "México", "Argentina", "Colombia", "Chile"), 1000, replace = TRUE),
+  ingresos_mensuales = round(exp(rnorm(1000, 8.5, 1)), 0),
+  activo = sample(c(TRUE, FALSE), 1000, replace = TRUE, prob = c(0.75, 0.25)),
+  fecha_ultima_actividad = NA
+)
+
+# Simular fechas de última actividad para clientes activos
+clientes_retencion[activo == TRUE, 
+                   fecha_ultima_actividad := sample(seq(as.Date("2024-01-01"), as.Date("2024-06-30"), by = "day"), 
+                                                   sum(activo), replace = TRUE)]
+
+# Dataset de transacciones para análisis de patrones
+transacciones_comportamiento <- data.table(
+  transaccion_id = 1:5000,
+  cliente_id = sample(1:1000, 5000, replace = TRUE),
+  fecha_transaccion = sample(seq(as.POSIXct("2024-01-01 00:00:00"), 
+                                as.POSIXct("2024-06-30 23:59:59"), by = "hour"), 5000, replace = TRUE),
+  categoria = sample(c("Alimentación", "Transporte", "Entretenimiento", "Salud", "Educación"), 
+                    5000, replace = TRUE),
+  monto = round(exp(rnorm(5000, 4, 1.2)), 2),
+  metodo_pago = sample(c("Tarjeta", "Efectivo", "Digital"), 5000, replace = TRUE, prob = c(0.5, 0.3, 0.2)),
+  comercio_id = sample(1:200, 5000, replace = TRUE)
+)
+
+# Dataset de sensores para análisis de series temporales
+sensores_temperatura <- data.table(
+  timestamp = rep(seq(as.POSIXct("2024-06-01 00:00:00"), 
+                     as.POSIXct("2024-06-07 23:59:59"), by = "15 min"), 3),
+  sensor_id = rep(c("TEMP_A", "TEMP_B", "TEMP_C"), each = 672),
+  temperatura = c(
+    20 + 5*sin(seq(0, 14*pi, length.out = 672)) + rnorm(672, 0, 1),  # Patrón senoidal para TEMP_A
+    22 + 3*cos(seq(0, 14*pi, length.out = 672)) + rnorm(672, 0, 0.8), # Patrón cosenoidal para TEMP_B
+    cumsum(rnorm(672, 0, 0.5)) + 21 + rnorm(672, 0, 0.3)            # Random walk para TEMP_C
+  ),
+  ubicacion = rep(c("Almacén_A", "Almacén_B", "Almacén_C"), each = 672)
+)
+
+# Limpiar valores extremos
+sensores_temperatura[temperatura < 5 | temperatura > 40, temperatura := NA]
+```
+
+## Funciones de Ventana (Window Functions)
+
+Las funciones de ventana permiten realizar cálculos sobre un conjunto de filas relacionadas con la fila actual, sin colapsar el resultado como lo harían las funciones de agregación.
+
+### 1. **`shift()`: Valores Anteriores y Posteriores**
+
+```{r}
+#| label: shift-basico
+#| echo: true
+
+# Calcular cambios diarios en precios
+precios_con_lag <- precios_diarios[order(ticker, fecha)][,
+  `:=`(
+    precio_anterior = shift(precio_cierre, 1),          # t-1
+    precio_siguiente = shift(precio_cierre, -1),        # t+1
+    precio_3_dias_antes = shift(precio_cierre, 3),      # t-3
+    volumen_anterior = shift(volumen, 1)
+  ), by = ticker]
+
+# Calcular métricas de cambio
+precios_con_lag[, `:=`(
+  cambio_diario = precio_cierre - precio_anterior,
+  cambio_pct = round((precio_cierre - precio_anterior) / precio_anterior * 100, 2),
+  volatilidad_3d = round(abs(precio_cierre - precio_3_dias_antes) / precio_3_dias_antes * 100, 2),
+  cambio_volumen = volumen - volumen_anterior
+)]
+
+print("Análisis de cambios diarios:")
+print(head(precios_con_lag[!is.na(precio_anterior), 
+                          .(ticker, fecha, precio_cierre, cambio_diario, cambio_pct, volatilidad_3d)], 10))
+```
+
+### 2. **`frollmean()` y Medias Móviles**
+
+```{r}
+#| label: frollmean-avanzado
+#| echo: true
+
+# Múltiples medias móviles para análisis técnico
+precios_ma <- precios_diarios[order(ticker, fecha)][,
+  `:=`(
+    ma_5 = frollmean(precio_cierre, 5),           # Media móvil 5 días
+    ma_20 = frollmean(precio_cierre, 20),         # Media móvil 20 días
+    ma_50 = frollmean(precio_cierre, 50),         # Media móvil 50 días
+    volume_ma_10 = frollmean(volumen, 10),        # Media móvil volumen 10 días
+    volatilidad_20 = frollapply(precio_cierre, 20, sd, na.rm = TRUE)  # Volatilidad 20 días
+  ), by = ticker]
+
+# Señales técnicas basadas en cruces de medias móviles
+precios_ma[!is.na(ma_50), `:=`(
+  señal_alcista = ma_5 > ma_20 & ma_20 > ma_50,
+  señal_bajista = ma_5 < ma_20 & ma_20 < ma_50,
+  precio_sobre_ma20 = precio_cierre > ma_20,
+  volumen_alto = volumen > volume_ma_10 * 1.5
+)]
+
+# Resumen de señales por ticker
+señales_resumen <- precios_ma[!is.na(señal_alcista), .(
+  dias_analizados = .N,
+  señales_alcistas = sum(señal_alcista, na.rm = TRUE),
+  señales_bajistas = sum(señal_bajista, na.rm = TRUE),
+  dias_sobre_ma20 = sum(precio_sobre_ma20, na.rm = TRUE),
+  volatilidad_promedio = round(mean(volatilidad_20, na.rm = TRUE), 2)
+), by = ticker]
+
+print("Resumen de señales técnicas:")
+print(señales_resumen)
+```
+
+### 3. **`frollapply()`: Funciones Personalizadas**
+
+```{r}
+#| label: frollapply-personalizado
+#| echo: true
+
+# Funciones personalizadas para análisis de ventana
+precios_estadisticas <- precios_diarios[order(ticker, fecha)][,
+  `:=`(
+    rango_10d = frollapply(precio_cierre, 10, function(x) max(x) - min(x)),
+    percentil_75_20d = frollapply(precio_cierre, 20, function(x) quantile(x, 0.75, na.rm = TRUE)),
+    coef_variacion_15d = frollapply(precio_cierre, 15, function(x) sd(x, na.rm = TRUE) / mean(x, na.rm = TRUE)),
+    precio_z_score_30d = frollapply(precio_cierre, 30, function(x) {
+      if(length(x) < 30) return(NA)
+      (tail(x, 1) - mean(x)) / sd(x)
+    }),
+    tendencia_5d = frollapply(precio_cierre, 5, function(x) {
+      if(length(x) < 5) return(NA)
+      lm_result <- lm(x ~ seq_along(x))
+      coef(lm_result)[2]  # Pendiente
+    })
+  ), by = ticker]
+
+# Análisis de distribuciones y outliers
+analisis_outliers <- precios_estadisticas[!is.na(precio_z_score_30d), .(
+  ticker,
+  fecha,
+  precio_cierre,
+  z_score = round(precio_z_score_30d, 2),
+  coef_var = round(coef_variacion_15d, 3),
+  tendencia = round(tendencia_5d, 4),
+  outlier_extremo = abs(precio_z_score_30d) > 2
+)][outlier_extremo == TRUE][order(-abs(z_score))]
+
+print("Precios con comportamiento outlier (|z-score| > 2):")
+print(head(analisis_outliers, 10))
+```
+
+## Funciones Condicionales Optimizadas
+
+### 1. **`fifelse()`: Condicionales Rápidas**
+
+```{r}
+#| label: fifelse-optimizado
+#| echo: true
+
+# Comparación de rendimiento: fifelse vs ifelse
+clientes_clasificacion <- copy(clientes_retencion)
+
+# fifelse para clasificaciones múltiples y anidadas
+clientes_clasificacion[, `:=`(
+  segmento_edad = fifelse(
+    edad < 25, "Joven",
+    fifelse(edad < 45, "Adulto", "Senior")
+  ),
+  categoria_ingresos = fifelse(
+    ingresos_mensuales < 2000, "Bajos",
+    fifelse(ingresos_mensuales < 5000, "Medios", "Altos")
+  ),
+  tipo_cliente = fifelse(
+    plan == "Empresarial", "Corporativo",
+    fifelse(activo & ingresos_mensuales > 3000, "Premium_Activo", "Estándar")
+  )
+)]
+
+# Análisis de segmentos
+segmentos_analisis <- clientes_clasificacion[, .(
+  clientes = .N,
+  ingresos_promedio = round(mean(ingresos_mensuales), 0),
+  tasa_actividad = round(mean(activo) * 100, 1),
+  planes_premium = sum(plan %in% c("Premium", "Empresarial"))
+), by = .(segmento_edad, categoria_ingresos, tipo_cliente)]
+
+print("Análisis de segmentos de clientes:")
+print(segmentos_analisis[order(-clientes)])
+```
+
+### 2. **`fcase()`: Múltiples Condiciones Elegantes**
+
+```{r}
+#| label: fcase-multiples-condiciones
+#| echo: true
+
+# Sistema de scoring complejo con fcase
+clientes_clasificacion[, score_retencion := fcase(
+  # Casos de alto valor
+  plan == "Empresarial" & activo & ingresos_mensuales > 5000, 95,
+  plan == "Premium" & activo & ingresos_mensuales > 3000, 85,
+  plan == "Básico" & activo & ingresos_mensuales > 4000, 80,
+  
+  # Casos de riesgo medio
+  !activo & ingresos_mensuales > 3000 & !is.na(fecha_ultima_actividad), 60,
+  activo & ingresos_mensuales < 2000, 55,
+  
+  # Casos de alto riesgo
+  !activo & is.na(fecha_ultima_actividad), 20,
+  !activo & ingresos_mensuales < 2000, 15,
+  
+  # Caso por defecto
+  default = 50
+)]
+
+# Estrategia de retención basada en score
+clientes_clasificacion[, estrategia_retencion := fcase(
+  score_retencion >= 90, "Mantener_Premium",
+  score_retencion >= 70, "Fidelizar_Activo", 
+  score_retencion >= 50, "Reactivar_Moderado",
+  score_retencion >= 30, "Reactivar_Intensivo",
+  default = "Evaluar_Cancelación"
+)]
+
+# Resumen estratégico
+resumen_estrategia <- clientes_clasificacion[, .(
+  clientes = .N,
+  score_promedio = round(mean(score_retencion), 1),
+  ingresos_totales = sum(ingresos_mensuales),
+  valor_cliente_promedio = round(mean(ingresos_mensuales), 0)
+), by = estrategia_retencion][order(-score_promedio)]
+
+print("Estrategias de retención por score:")
+print(resumen_estrategia)
+```
+
+### 3. **`between()`: Rangos Eficientes**
+
+```{r}
+#| label: between-rangos
+#| echo: true
+
+# Usar between para clasificaciones por rangos
+transacciones_analisis <- copy(transacciones_comportamiento)
+
+transacciones_analisis[, `:=`(
+  # Clasificación por monto usando between
+  categoria_monto = fcase(
+    between(monto, 0, 20), "Micro",
+    between(monto, 20.01, 100), "Pequeña", 
+    between(monto, 100.01, 500), "Mediana",
+    between(monto, 500.01, 2000), "Grande",
+    monto > 2000, "Muy Grande",
+    default = "Sin Clasificar"
+  ),
+  
+  # Clasificación temporal
+  hora = hour(fecha_transaccion),
+  franja_horaria = fcase(
+    between(hour(fecha_transaccion), 6, 11), "Mañana",
+    between(hour(fecha_transaccion), 12, 17), "Tarde", 
+    between(hour(fecha_transaccion), 18, 22), "Noche",
+    default = "Madrugada"
+  ),
+  
+  # Día de la semana
+  dia_semana = wday(fecha_transaccion, label = TRUE),
+  es_fin_semana = wday(fecha_transaccion) %in% c(1, 7)
+)]
+
+# Análisis de patrones de comportamiento
+patrones_comportamiento <- transacciones_analisis[, .(
+  transacciones = .N,
+  monto_promedio = round(mean(monto), 2),
+  monto_mediana = round(median(monto), 2),
+  monto_total = round(sum(monto), 2)
+), by = .(categoria_monto, franja_horaria, es_fin_semana)][
+  order(-transacciones)
+]
+
+print("Patrones de comportamiento transaccional:")
+print(head(patrones_comportamiento, 12))
+```
+
+## Funciones de Agregación Especiales
+
+### 1. **`frank()`: Rankings y Percentiles**
+
+```{r}
+#| label: frank-rankings
+#| echo: true
+
+# Rankings complejos con frank()
+rankings_clientes <- clientes_clasificacion[, `:=`(
+  # Ranking por ingresos (descendente)
+  rank_ingresos = frank(-ingresos_mensuales),
+  rank_ingresos_pct = frank(-ingresos_mensuales / .N * 100),
+  
+  # Ranking por score de retención
+  rank_retencion = frank(-score_retencion),
+  
+  # Ranking dentro de cada plan
+  rank_en_plan = frank(.SD[,-ingresos_mensuales, by = plan]),
+  rank_en_pais = frank(.SD[,-ingresos_mensuales, by = pais])
+)]
+
+# Top performers por categoría
+top_performers <- rankings_clientes[rank_ingresos <= 50, .(
+  cliente_id, plan, pais, ingresos_mensuales, score_retencion,
+  rank_global = rank_ingresos,
+  rank_en_plan, rank_en_pais,
+  percentil_ingresos = round(100 - rank_ingresos_pct, 1)
+)][order(rank_global)]
+
+print("Top 10 clientes por ingresos:")
+print(head(top_performers, 10))
+```
+
+### 2. **`rleid()`: Identificación de Runs**
+
+```{r}
+#| label: rleid-runs
+#| echo: true
+
+# Identificar secuencias de comportamiento con rleid()
+sensores_runs <- sensores_temperatura[order(sensor_id, timestamp)][, `:=`(
+  # Clasificar temperatura en rangos
+  temp_categoria = fcase(
+    temperatura < 18, "Baja",
+    between(temperatura, 18, 22), "Normal",
+    between(temperatura, 22, 26), "Alta",
+    temperatura > 26, "Muy Alta",
+    default = "Sin Datos"
+  )
+)][, `:=`(
+  # Identificar runs (secuencias consecutivas)
+  run_id = rleid(temp_categoria),
+  # También podemos identificar runs de tendencia
+  tendencia = fcase(
+    temperatura > shift(temperatura, 1), "Subida",
+    temperatura < shift(temperatura, 1), "Bajada", 
+    default = "Estable"
+  )
+), by = sensor_id][, `:=`(
+  run_tendencia = rleid(tendencia)
+), by = sensor_id]
+
+# Análisis de runs de temperatura
+analisis_runs <- sensores_runs[!is.na(temperatura), .(
+  duracion_run = .N,
+  temp_promedio = round(mean(temperatura, na.rm = TRUE), 1),
+  temp_min = round(min(temperatura, na.rm = TRUE), 1),
+  temp_max = round(max(temperatura, na.rm = TRUE), 1),
+  inicio_run = min(timestamp),
+  fin_run = max(timestamp)
+), by = .(sensor_id, temp_categoria, run_id)][
+  duracion_run >= 4  # Solo runs de al menos 4 mediciones (1 hora)
+][order(sensor_id, -duracion_run)]
+
+print("Runs de temperatura más largos:")
+print(head(analisis_runs, 12))
+```
+
+### 3. **`uniqueN()`: Conteos de Únicos Eficientes**
+
+```{r}
+#| label: uniqueN-eficiente
+#| echo: true
+
+# Análisis de diversidad con uniqueN()
+diversidad_transacciones <- transacciones_analisis[, .(
+  # Diversidad básica
+  transacciones_totales = .N,
+  categorias_usadas = uniqueN(categoria),
+  comercios_visitados = uniqueN(comercio_id),
+  metodos_pago_usados = uniqueN(metodo_pago),
+  
+  # Métricas de comportamiento
+  dias_activos = uniqueN(as.Date(fecha_transaccion)),
+  horas_activas = uniqueN(hour(fecha_transaccion)),
+  monto_promedio = round(mean(monto), 2),
+  
+  # Diversidad temporal
+  meses_activos = uniqueN(month(fecha_transaccion)),
+  dias_semana_activos = uniqueN(wday(fecha_transaccion))
+), by = cliente_id]
+
+# Calcular índices de diversidad
+diversidad_transacciones[, `:=`(
+  indice_diversidad_categoria = round(categorias_usadas / 5 * 100, 1),  # 5 categorías posibles
+  indice_diversidad_temporal = round(horas_activas / 24 * 100, 1),      # 24 horas posibles
+  indice_actividad = round(dias_activos / 180 * 100, 1),                # ~180 días en periodo
+  score_engagement = round((categorias_usadas * 10) + (dias_activos * 2) + (comercios_visitados * 3), 0)
+)]
+
+# Clasificar clientes por engagement
+diversidad_transacciones[, categoria_engagement := fcase(
+  score_engagement > 200, "Muy Alto",
+  score_engagement > 100, "Alto",
+  score_engagement > 50, "Medio", 
+  score_engagement > 20, "Bajo",
+  default = "Muy Bajo"
+)]
+
+# Resumen por categoría de engagement
+resumen_engagement <- diversidad_transacciones[, .(
+  clientes = .N,
+  transacciones_promedio = round(mean(transacciones_totales), 1),
+  diversidad_categoria_promedio = round(mean(indice_diversidad_categoria), 1),
+  score_promedio = round(mean(score_engagement), 0)
+), by = categoria_engagement][order(-score_promedio)]
+
+print("Análisis de engagement de clientes:")
+print(resumen_engagement)
+```
+
+## Análisis Temporal Avanzado
+
+### 1. **Detección de Anomalías Temporales**
+
+```{r}
+#| label: anomalias-temporales
+#| echo: true
+
+# Sistema de detección de anomalías para sensores
+anomalias_sensores <- sensores_temperatura[order(sensor_id, timestamp)][, `:=`(
+  # Medias móviles para diferentes ventanas
+  temp_ma_short = frollmean(temperatura, 4, na.rm = TRUE),    # 1 hora
+  temp_ma_long = frollmean(temperatura, 24, na.rm = TRUE),    # 6 horas
+  temp_sd_window = frollapply(temperatura, 12, sd, na.rm = TRUE), # Desviación móvil
+  
+  # Cambios absolutos
+  cambio_temp = abs(temperatura - shift(temperatura, 1)),
+  cambio_temp_2 = abs(temperatura - shift(temperatura, 2))
+), by = sensor_id][, `:=`(
+  # Detección de anomalías
+  anomalia_spike = cambio_temp > 3,  # Cambio súbito > 3 grados
+  anomalia_drift = !is.na(temp_ma_long) & abs(temperatura - temp_ma_long) > 5, # Desviación > 5 grados de media larga
+  anomalia_variabilidad = !is.na(temp_sd_window) & temp_sd_window > 2 # Alta variabilidad
+  
+ 
+)]
+
+# Score compuesto de anomalía
+anomalias_sensores[, score_anomalia := (as.numeric(anomalia_spike) * 3) + 
+                  (as.numeric(anomalia_drift) * 2) + 
+                  (as.numeric(anomalia_variabilidad) * 1)]
+
+
+# Resumen de anomalías por sensor
+resumen_anomalias <- anomalias_sensores[!is.na(temperatura), .(
+  lecturas_totales = .N,
+  anomalias_spike = sum(anomalia_spike, na.rm = TRUE),
+  anomalias_drift = sum(anomalia_drift, na.rm = TRUE),
+  anomalias_variabilidad = sum(anomalia_variabilidad, na.rm = TRUE),
+  score_promedio = round(mean(score_anomalia, na.rm = TRUE), 2),
+  temp_min = round(min(temperatura, na.rm = TRUE), 1),
+  temp_max = round(max(temperatura, na.rm = TRUE), 1)
+), by = .(sensor_id, ubicacion)]
+
+print("Resumen de anomalías por sensor:")
+print(resumen_anomalias)
+
+# Top anomalías individuales
+top_anomalias <- anomalias_sensores[score_anomalia >= 2, .(
+  sensor_id, timestamp, temperatura, temp_ma_long, 
+  cambio_temp, score_anomalia
+)][order(-score_anomalia)]
+
+if(nrow(top_anomalias) > 0) {
+  print("\nTop anomalías detectadas:")
+  print(head(top_anomalias, 8))
+} else {
+  cat("\nNo se detectaron anomalías significativas (score >= 2)\n")
+}
+```
+
+### 2. **Análisis de Ciclos y Estacionalidad**
+
+```{r}
+#| label: ciclos-estacionalidad
+#| echo: true
+
+# Análisis de patrones cíclicos en datos de sensores
+patrones_ciclicos <- sensores_temperatura[!is.na(temperatura)][, `:=`(
+  hora = hour(timestamp),
+  dia = as.numeric(as.Date(timestamp) - min(as.Date(timestamp))) + 1,
+  minuto_del_dia = hour(timestamp) * 60 + minute(timestamp)
+)][, .(
+  temperatura_promedio = round(mean(temperatura), 1),
+  temperatura_sd = round(sd(temperatura), 2),
+  lecturas = .N
+), by = .(sensor_id, hora)]
+
+# Identificar patrones horarios
+patrones_resumen <- patrones_ciclicos[, .(
+  hora_mas_fria = hora[which.min(temperatura_promedio)],
+  temp_mas_fria = min(temperatura_promedio),
+  hora_mas_calida = hora[which.max(temperatura_promedio)],
+  temp_mas_calida = max(temperatura_promedio),
+  amplitud_termica = round(max(temperatura_promedio) - min(temperatura_promedio), 1),
+  variabilidad_promedio = round(mean(temperatura_sd), 2)
+), by = sensor_id]
+
+print("Patrones térmicos diarios por sensor:")
+print(patrones_resumen)
+```
+
+## Ejercicios Prácticos
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 11: Sistema de Alertas de Anomalías
+
+Usando los datasets de sensores y transacciones:
+
+1. **Implementa** un sistema de detección de anomalías multicapa
+2. **Usa `frollapply()`** para ventanas personalizadas de detección
+3. **Clasifica anomalías** con `fcase()` por severidad
+4. **Genera alertas** automáticas con `rleid()` para secuencias anómalas
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 11
+
+```{r}
+#| label: solucion-ejercicio-11
+#| echo: true
+
+# Sistema completo de detección de anomalías multicapa
+# CAPA 1: Anomalías estadísticas
+sistema_anomalias <- sensores_temperatura[order(sensor_id, timestamp)][, `:=`(
+  # Ventanas de referencia
+  temp_ma_1h = frollmean(temperatura, 4, na.rm = TRUE),
+  temp_ma_6h = frollmean(temperatura, 24, na.rm = TRUE), 
+  temp_ma_24h = frollmean(temperatura, 96, na.rm = TRUE),
+  
+  # Medidas de variabilidad
+  temp_sd_1h = frollapply(temperatura, 4, sd, na.rm = TRUE),
+  temp_sd_6h = frollapply(temperatura, 24, sd, na.rm = TRUE),
+  
+  # Percentiles móviles
+  temp_p25_6h = frollapply(temperatura, 24, function(x) quantile(x, 0.25, na.rm = TRUE)),
+  temp_p75_6h = frollapply(temperatura, 24, function(x) quantile(x, 0.75, na.rm = TRUE)),
+  
+  # Cambios temporales
+  cambio_15min = abs(temperatura - shift(temperatura, 1)),
+  cambio_1h = abs(temperatura - shift(temperatura, 4)),
+  tendencia_1h = frollapply(temperatura, 4, function(x) {
+    if(length(x) < 4) return(0)
+    lm(x ~ seq_along(x))$coefficients[2]
+  })
+), by = sensor_id][, `:=`(
+  # CAPA 2: Detección de anomalías específicas
+  anomalia_spike = cambio_15min > 5,  # Cambio súbito > 5°C
+  anomalia_drift = !is.na(temp_ma_6h) & abs(temperatura - temp_ma_6h) > 4, # Drift > 4°C
+  anomalia_variabilidad = !is.na(temp_sd_1h) & temp_sd_1h > 3, # Alta variabilidad
+  anomalia_outlier = !is.na(temp_p25_6h) & !is.na(temp_p75_6h) & 
+                    (temperatura < (temp_p25_6h - 1.5*(temp_p75_6h - temp_p25_6h)) |
+                     temperatura > (temp_p75_6h + 1.5*(temp_p75_6h - temp_p25_6h))),
+  anomalia_tendencia = !is.na(tendencia_1h) & abs(tendencia_1h) > 1, # Tendencia > 1°C/15min
+  anomalia_frozen = !is.na(temp_sd_1h) & temp_sd_1h < 0.1 & !is.na(temperatura)  # Sensor "congelado"
+)]
+
+# CAPA 3: Clasificación por severidad con fcase()
+sistema_anomalias[, `:=`(
+  # Score compuesto
+  score_anomalia = (as.numeric(anomalia_spike) * 5) + 
+                  (as.numeric(anomalia_drift) * 3) +
+                  (as.numeric(anomalia_variabilidad) * 2) +
+                  (as.numeric(anomalia_outlier) * 2) +
+                  (as.numeric(anomalia_tendencia) * 4) +
+                  (as.numeric(anomalia_frozen) * 6)
+)][, severidad := fcase(
+  score_anomalia >= 10, "CRÍTICA",
+  score_anomalia >= 6, "ALTA", 
+  score_anomalia >= 3, "MEDIA",
+  score_anomalia >= 1, "BAJA",
+  default = "NORMAL"
+)]
+
+# CAPA 4: Detección de secuencias anómalas con rleid()
+sistema_anomalias[, `:=`(
+  es_anomalo = severidad != "NORMAL",
+  secuencia_id = rleid(severidad != "NORMAL")
+), by = sensor_id]
+
+# Análisis de secuencias anómalas
+secuencias_anomalas <- sistema_anomalias[es_anomalo == TRUE, .(
+  duracion_minutos = .N * 15,  # 15 min por medición
+  severidad_maxima = severidad[which.max(score_anomalia)],
+  score_maximo = max(score_anomalia),
+  score_promedio = round(mean(score_anomalia), 1),
+  temp_min = round(min(temperatura, na.rm = TRUE), 1),
+  temp_max = round(max(temperatura, na.rm = TRUE), 1),
+  inicio = min(timestamp),
+  fin = max(timestamp),
+  tipos_anomalia = paste(unique(c(
+    if(any(anomalia_spike)) "SPIKE",
+    if(any(anomalia_drift)) "DRIFT", 
+    if(any(anomalia_variabilidad)) "VARIABILIDAD",
+    if(any(anomalia_outlier)) "OUTLIER",
+    if(any(anomalia_tendencia)) "TENDENCIA",
+    if(any(anomalia_frozen)) "FROZEN"
+  )), collapse = ", ")
+), by = .(sensor_id, secuencia_id)][
+  duracion_minutos >= 30  # Solo secuencias de al menos 30 minutos
+][order(-score_maximo)]
+
+# SISTEMA DE ALERTAS AUTOMÁTICAS
+cat("🚨 SISTEMA DE ALERTAS DE ANOMALÍAS 🚨\n\n")
+
+# Alertas activas por sensor
+alertas_activas <- sistema_anomalias[es_anomalo == TRUE, .N, by = .(sensor_id, severidad)][order(sensor_id, severidad)]
+
+if(nrow(alertas_activas) > 0) {
+  cat("ALERTAS ACTIVAS POR SENSOR:\n")
+  print(alertas_activas)
+} else {
+  cat("✅ No hay alertas activas en este momento.\n")
+}
+
+# Top secuencias críticas
+if(nrow(secuencias_anomalas) > 0) {
+  cat("\n🔥 TOP SECUENCIAS ANÓMALAS:\n")
+  print(head(secuencias_anomalas[, .(sensor_id, severidad_maxima, duracion_minutos, 
+                                    score_maximo, tipos_anomalia, inicio)], 8))
+} else {
+  cat("\n✅ No se detectaron secuencias anómalas significativas.\n")
+}
+
+# Resumen estadístico
+resumen_sistema <- sistema_anomalias[!is.na(temperatura), .(
+  lecturas_totales = .N,
+  anomalias_detectadas = sum(es_anomalo),
+  pct_anomalias = round(mean(es_anomalo) * 100, 2),
+  score_promedio = round(mean(score_anomalia), 2)
+), by = sensor_id]
+
+cat("\n📊 RESUMEN DEL SISTEMA:\n")
+print(resumen_sistema)
+
+# # Crear tabla interactiva de secuencias críticas (comentado para PDF)
+# if(nrow(secuencias_anomalas) > 0) {
+#   DT::datatable(
+#     secuencias_anomalas[1:min(20, nrow(secuencias_anomalas))],
+#     caption = "Secuencias Anómalas Detectadas - Sistema Multicapa",
+#     options = list(pageLength = 10, scrollX = TRUE)
+#   ) %>%
+#     DT::formatStyle(
+#       "severidad_maxima",
+#       backgroundColor = DT::styleEqual(
+#         c("CRÍTICA", "ALTA", "MEDIA", "BAJA"),
+#         c("red", "orange", "yellow", "lightblue")
+#       )
+#     )
+# }
+```
+:::
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 12: Análisis de Supervivencia de Clientes
+
+1. **Calcula métricas temporales** con `shift()` y funciones de ventana
+2. **Identifica patrones de churn** usando `rleid()` para secuencias de inactividad
+3. **Clasifica riesgo de abandono** con `fcase()` múltiples criterios
+4. **Genera score predictivo** combinando múltiples señales
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 12
+
+```{r}
+#| label: solucion-ejercicio-12
+#| echo: true
+
+# Análisis de supervivencia y predicción de churn
+# 1. Preparar datos temporales con métricas de ventana
+analisis_supervivencia <- clientes_retencion[, `:=`(
+  dias_desde_registro = as.numeric(as.Date("2024-06-30") - fecha_registro),
+  dias_desde_ultima_actividad = fifelse(
+    is.na(fecha_ultima_actividad), 
+    as.numeric(as.Date("2024-06-30") - fecha_registro),
+    as.numeric(as.Date("2024-06-30") - fecha_ultima_actividad)
+  )
+)]
+
+# Combinar con datos transaccionales para análisis de comportamiento
+comportamiento_clientes <- transacciones_comportamiento[, .(
+  transacciones_totales = .N,
+  gasto_total = sum(monto),
+  gasto_promedio = round(mean(monto), 2),
+  dias_activos = uniqueN(as.Date(fecha_transaccion)),
+  categorias_usadas = uniqueN(categoria),
+  ultima_transaccion = max(as.Date(fecha_transaccion)),
+  primera_transaccion = min(as.Date(fecha_transaccion))
+), by = cliente_id]
+
+# Join con datos de clientes
+supervivencia_completa <- analisis_supervivencia[
+  comportamiento_clientes, on = .(cliente_id), nomatch = NULL
+][, `:=`(
+  dias_desde_primera_trans = as.numeric(as.Date("2024-06-30") - primera_transaccion),
+  dias_desde_ultima_trans = as.numeric(as.Date("2024-06-30") - ultima_transaccion),
+  frecuencia_transaccional = round(transacciones_totales / dias_activos, 2)
+)]
+
+# 2. Identificar patrones de declive con funciones de ventana
+# Simular datos de actividad mensual para análisis temporal
+actividad_mensual <- supervivencia_completa[, .(
+  cliente_id, activo, ingresos_mensuales, gasto_total, transacciones_totales
+)][, .(
+  cliente_id, 
+  mes = rep(1:6, .N),
+  actividad_simulada = as.numeric(activo) * exp(-abs(rnorm(.N * 6, 0, 0.3))),
+  gasto_simulado = rep(gasto_total / 6, 6) * exp(rnorm(.N * 6, 0, 0.4))
+), by = cliente_id][order(cliente_id, mes)]
+
+# Aplicar funciones de ventana para detectar tendencias
+actividad_tendencias <- actividad_mensual[, `:=`(
+  actividad_ma3 = frollmean(actividad_simulada, 3),
+  gasto_ma3 = frollmean(gasto_simulado, 3),
+  actividad_anterior = shift(actividad_simulada, 1),
+  gasto_anterior = shift(gasto_simulado, 1),
+  tendencia_actividad = actividad_simulada - shift(actividad_simulada, 1),
+  secuencia_declive = rleid(actividad_simulada < shift(actividad_simulada, 1))
+), by = cliente_id]
+
+# 3. Análisis de riesgo de churn con múltiples criterios
+modelo_churn <- supervivencia_completa[, `:=`(
+  # Señales de riesgo temporal
+  riesgo_inactividad = fcase(
+    dias_desde_ultima_trans > 90, "ALTO",
+    dias_desde_ultima_trans > 60, "MEDIO",
+    dias_desde_ultima_trans > 30, "BAJO",
+    default = "MÍNIMO"
+  ),
+  
+  # Señales de comportamiento
+  riesgo_engagement = fcase(
+    frecuencia_transaccional < 0.1 & categorias_usadas <= 2, "ALTO",
+    frecuencia_transaccional < 0.3 & categorias_usadas <= 3, "MEDIO", 
+    frecuencia_transaccional < 0.5, "BAJO",
+    default = "MÍNIMO"
+  ),
+  
+  # Señales económicas
+  riesgo_economico = fcase(
+    gasto_promedio < ingresos_mensuales * 0.01, "ALTO",  # Gasta <1% de ingresos
+    gasto_promedio < ingresos_mensuales * 0.03, "MEDIO", # Gasta <3% de ingresos
+    gasto_promedio < ingresos_mensuales * 0.05, "BAJO",  # Gasta <5% de ingresos
+    default = "MÍNIMO"
+  ),
+  
+  # Señal de valor del cliente
+  valor_cliente = round((gasto_total / dias_activos) * (ingresos_mensuales / 1000), 0)
+)][, `:=`(
+  # Score compuesto de riesgo de churn
+  score_churn = (
+    (riesgo_inactividad == "ALTO") * 40 + (riesgo_inactividad == "MEDIO") * 25 + (riesgo_inactividad == "BAJO") * 10 +
+    (riesgo_engagement == "ALTO") * 30 + (riesgo_engagement == "MEDIO") * 20 + (riesgo_engagement == "BAJO") * 10 +
+    (riesgo_economico == "ALTO") * 20 + (riesgo_economico == "MEDIO") * 12 + (riesgo_economico == "BAJO") * 5 +
+    ifelse(!activo, 25, 0)  # Penalización por inactividad actual
+  )
+)][, `:=`(
+  # 4. Clasificación final y estrategia
+  clasificacion_churn = fcase(
+    score_churn >= 80, "CHURN_INMEDIATO",
+    score_churn >= 60, "ALTO_RIESGO", 
+    score_churn >= 40, "RIESGO_MODERADO",
+    score_churn >= 20, "BAJO_RIESGO",
+    default = "SALUDABLE"
+  ),
+  
+  estrategia_retencion = fcase(
+    score_churn >= 80, "Contacto_Inmediato + Oferta_Especial",
+    score_churn >= 60, "Programa_Reactivación + Descuentos",
+    score_churn >= 40, "Comunicación_Personalizada", 
+    score_churn >= 20, "Monitoreo_Activo",
+    default = "Mantenimiento_Rutinario"
+  )
+)]
+
+# Análisis de resultados
+cat("📈 ANÁLISIS DE SUPERVIVENCIA DE CLIENTES 📈\n\n")
+
+# Distribución por clasificación
+distribucion_churn <- modelo_churn[, .N, by = clasificacion_churn][order(-N)]
+cat("DISTRIBUCIÓN POR RIESGO DE CHURN:\n")
+print(distribucion_churn)
+
+# Estadísticas por grupo de riesgo
+stats_por_riesgo <- modelo_churn[, .(
+  clientes = .N,
+  score_promedio = round(mean(score_churn), 1),
+  ingresos_promedio = round(mean(ingresos_mensuales), 0),
+  valor_cliente_promedio = round(mean(valor_cliente), 0),
+  dias_inactividad_promedio = round(mean(dias_desde_ultima_trans), 0),
+  tasa_actividad_actual = round(mean(activo) * 100, 1)
+), by = clasificacion_churn][order(-score_promedio)]
+
+cat("\n📊 ESTADÍSTICAS POR GRUPO DE RIESGO:\n")
+print(stats_por_riesgo)
+
+# Clientes críticos que requieren atención inmediata
+clientes_criticos <- modelo_churn[clasificacion_churn %in% c("CHURN_INMEDIATO", "ALTO_RIESGO"), .(
+  cliente_id, plan, pais, ingresos_mensuales, valor_cliente, 
+  score_churn, clasificacion_churn, estrategia_retencion,
+  dias_inactividad = dias_desde_ultima_trans
+)][order(-score_churn)]
+
+cat("\n🚨 CLIENTES QUE REQUIEREN ATENCIÓN INMEDIATA:\n")
+print(head(clientes_criticos, 10))
+
+# ROI potencial de estrategias de retención
+roi_estrategias <- modelo_churn[, .(
+  clientes_objetivo = .N,
+  valor_total_riesgo = sum(valor_cliente),
+  valor_promedio_cliente = round(mean(valor_cliente), 0),
+  inversion_retencion_estimada = .N * fcase(
+    unique(clasificacion_churn) == "CHURN_INMEDIATO", 200,
+    unique(clasificacion_churn) == "ALTO_RIESGO", 100,
+    unique(clasificacion_churn) == "RIESGO_MODERADO", 50,
+    default = 20
+  ),
+  roi_potencial = round((sum(valor_cliente) * 0.7) / (.N * fcase(
+    unique(clasificacion_churn) == "CHURN_INMEDIATO", 200,
+    unique(clasificacion_churn) == "ALTO_RIESGO", 100, 
+    unique(clasificacion_churn) == "RIESGO_MODERADO", 50,
+    default = 20
+  )), 1)
+), by = .(clasificacion_churn, estrategia_retencion)][order(-roi_potencial)]
+
+cat("\n💰 ANÁLISIS DE ROI DE ESTRATEGIAS:\n")
+print(roi_estrategias)
+```
+:::
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **Funciones de ventana** (`shift`, `frollmean`, `frollapply`) permiten análisis temporal sofisticado sin colapsar datos
+2. **Funciones condicionales** (`fifelse`, `fcase`, `between`) optimizan clasificaciones complejas
+3. **Funciones de agregación especiales** (`frank`, `rleid`, `uniqueN`) revelan patrones ocultos en los datos
+4. **Análisis temporal** combina múltiples técnicas para detección de anomalías y predicción
+5. **Performance**: Estas funciones están altamente optimizadas y son significativamente más rápidas que alternativas de R base
+6. **Casos de uso reales**: Finanzas, IoT, análisis de comportamiento - las aplicaciones son ilimitadas
+:::
+
+Las funciones especiales de `data.table` te dan superpoderes para análisis complejos. En el próximo capítulo exploraremos las técnicas de reshape que complementan perfectamente estas funciones para transformaciones de datos avanzadas.
+
+<function_calls>
+<invoke name="TodoWrite">
+<parameter name="todos">[{"content": "Reorganizar M\u00f3dulo 1: dividir fundamentos en sintaxis y s\u00edmbolos", "status": "completed", "id": "1"}, {"content": "Crear cap01-simbolos.qmd para s\u00edmbolos especiales del M\u00f3dulo 1", "status": "completed", "id": "1-new"}, {"content": "Reorganizar M\u00f3dulo 2: dividir en encadenamiento y joins", "status": "completed", "id": "2"}, {"content": "Crear cap03-joins-avanzados.qmd para joins avanzados del M\u00f3dulo 3", "status": "completed", "id": "3-1"}, {"content": "Crear cap03-funciones-especiales.qmd para funciones especiales del M\u00f3dulo 3", "status": "completed", "id": "3-2"}, {"content": "Crear cap03-reshape.qmd para reshape del M\u00f3dulo 3", "status": "in_progress", "id": "3-3"}, {"content": "Reorganizar M\u00f3dulo 4: dividir en performance y buenas pr\u00e1cticas", "status": "pending", "id": "4"}, {"content": "Reorganizar M\u00f3dulo 5: dividir en visualizaci\u00f3n y aplicaciones", "status": "pending", "id": "5"}]

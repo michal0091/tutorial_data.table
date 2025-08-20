@@ -1,0 +1,73 @@
+# _brand.yml - Archivo de Configuración de Marca para Kinelytics
+# Define los elementos visuales centrales que se utilizarán para generar
+# un tema personalizado de Quarto (generalmente a través de SASS).
+
+
+logo:
+  images:
+    icon:
+      path: logos/kinelytics-header-icon-white.svg
+      alt: "Kinelytics logo"
+    header:
+      path: logos/kinelytic-header-logo.svg
+      alt: "Company name with logo"
+    header-white:
+      path: logos/kinelytic-header-logo-white.svg
+      alt: "Company name with logo in white"
+    full:
+      path: logos/kinelytics-full-logo.svg
+      alt: "Full Kinelytics logo with tagline"
+  small: icon
+  medium:
+    light: header
+    dark: header-white
+  large: full
+
+color:
+  # Paleta base de colores. Define aquí todos los colores nombrados que usarás.
+  palette:
+    black: "#142021"        # Negro principal (Texto)
+    white: "#f0f5ef"        # Blanco principal (Fondo)
+    blue-green: "#1f3a3d"   # Azul verdoso oscuro (Primario / Oscuro)
+    green: "#2c5e68"        # Verde azulado (Secundario / Info)
+    blue: "#507c8b"         # Azul suave (Info / Acento)
+    light: "#b8d6c6"        # Verde azulado claro (Claro / Acento suave)
+    red: "#d9534f"          # Rojo para 'danger' (Error, Alerta)
+    orange: "#f0ad4e"       # Naranja para 'warning' (Advertencia)
+    light-green: "#5cb85c"  # Verde claro para 'success' (Éxito)
+
+  # Mapeo de la paleta a roles semánticos (inspirado en Bootstrap).
+  foreground: black         
+  background: white         
+
+  primary: blue-green       # Color principal (enlaces, botones activos, etc.)
+  secondary: green          # Color secundario (botones alternativos, etc.) 
+  success: light-green      # Color para mensajes/indicadores de éxito
+  info: blue                # Color para mensajes informativos
+  warning: orange           # Color para advertencias
+  danger: red               # Color para errores/peligro
+  light: light              # Color para fondos/componentes claros 
+  dark: blue-green          # Color para fondos/componentes oscuros
+  link: primary             # El color de los enlaces por defecto usa 'primary'. 
+
+typography:
+  # Define las familias de fuentes a importar y utilizar.
+  fonts:
+    - family: Exo 2         # Fuente principal para cuerpo y/o encabezados
+      source: google     
+
+    - family: Fira Mono     # Fuente monoespaciada para código
+      source: google
+
+  # Asignación de fuentes a roles tipográficos.
+  base:
+    family: Exo 2           # Familia de fuente para el cuerpo del texto principal.
+    weight: 400             # Peso por defecto (Regular)
+
+  headings:
+    family: Exo 2           # Familia de fuente para encabezados (h1-h6).
+    weight: 800
+
+  monospace:
+    family: Fira Mono       # Familia de fuente para bloques de código 
+    weight: 400             # Peso por defecto para el código.

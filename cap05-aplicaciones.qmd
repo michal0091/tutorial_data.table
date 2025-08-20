@@ -1,0 +1,1460 @@
+# Aplicaciones del Mundo Real {#sec-aplicaciones}
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **Aplicaciones Shiny** escalables con data.table
+- **Integración con tidymodels** para machine learning robusto
+- **Conexión con bases de datos** y ecosistemas Big Data
+- **dtplyr**: El puente entre data.table y tidyverse
+- **Casos de uso industriales** reales y prácticos
+:::
+
+```{r}
+#| label: setup-cap05-app
+#| include: false
+
+library(data.table)
+library(ggplot2)
+library(DT)
+library(scales)
+library(knitr)
+library(lubridate)
+
+# Paquetes adicionales para ejemplos (cargar condicionalmente)
+if(requireNamespace("shiny", quietly = TRUE)) library(shiny)
+if(requireNamespace("dtplyr", quietly = TRUE)) library(dtplyr)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets para aplicaciones del mundo real
+set.seed(2024)
+
+# Dataset de clientes para machine learning
+datos_clientes <- data.table(
+  cliente_id = 1:10000,
+  edad = pmax(18, pmin(80, round(rnorm(10000, 42, 15)))),
+  ingresos = pmax(20000, round(exp(rnorm(10000, 10.8, 0.6)))),
+  antiguedad_meses = sample(1:120, 10000, replace = TRUE),
+  num_productos = sample(1:8, 10000, replace = TRUE, prob = c(0.3, 0.25, 0.2, 0.1, 0.08, 0.04, 0.02, 0.01)),
+  region = sample(c("Norte", "Sur", "Este", "Oeste", "Centro"), 10000, replace = TRUE),
+  canal_preferido = sample(c("Online", "Tienda", "Teléfono", "App"), 10000, replace = TRUE, prob = c(0.45, 0.3, 0.15, 0.1)),
+  satisfaccion = round(runif(10000, 1, 5), 1),
+  num_quejas_ultimo_año = rpois(10000, 0.8),
+  uso_app_mensual = pmax(0, round(rnorm(10000, 12, 8))),
+  transacciones_ultimo_mes = rpois(10000, 3),
+  churn_flag = rbinom(10000, 1, 0.12)  # 12% de churn
+)
+
+# Crear features engineered
+datos_clientes[, `:=`(
+  valor_cliente = (ingresos * antiguedad_meses * num_productos) / 100000,
+  engagement_score = pmin(10, (num_productos * 2 + uso_app_mensual / 5 + transacciones_ultimo_mes + (5 - satisfaccion) * -1)),
+  categoria_edad = cut(edad, breaks = c(0, 30, 45, 60, 100), labels = c("Joven", "Adulto_Joven", "Adulto", "Senior")),
+  categoria_ingresos = cut(ingresos, quantile(ingresos, c(0, 0.33, 0.66, 1)), labels = c("Bajo", "Medio", "Alto"), include.lowest = TRUE)
+)]
+datos_clientes[, `:=`(
+  riesgo_churn = as.numeric(num_quejas_ultimo_año > 2 | satisfaccion < 3 | engagement_score < 4),
+  cliente_vip = as.numeric(valor_cliente > quantile(valor_cliente, 0.9) & satisfaccion >= 4))]
+
+# Dataset de transacciones para análisis temporal
+transacciones_detalle <- data.table(
+  transaccion_id = 1:50000,
+  cliente_id = sample(datos_clientes$cliente_id, 50000, replace = TRUE),
+  fecha_transaccion = sample(seq(as.Date("2023-01-01"), as.Date("2024-12-31"), by = "day"), 50000, replace = TRUE),
+  producto_categoria = sample(c("Electronics", "Clothing", "Books", "Home", "Sports", "Beauty"), 50000, replace = TRUE),
+  monto = round(rexp(50000, 1/75) + 10, 2),
+  canal = sample(c("Online", "Tienda", "App", "Teléfono"), 50000, replace = TRUE, prob = c(0.4, 0.35, 0.2, 0.05)),
+  metodo_pago = sample(c("Tarjeta_Credito", "Tarjeta_Debito", "Efectivo", "Digital"), 50000, replace = TRUE, prob = c(0.45, 0.25, 0.2, 0.1)),
+  descuento_aplicado = rbinom(50000, 1, 0.3) * runif(50000, 0.05, 0.25),
+  es_devolucion = rbinom(50000, 1, 0.08)
+)
+
+# Crear métricas derivadas
+transacciones_detalle[, `:=`(
+  monto_final = monto * (1 - descuento_aplicado),
+  año = year(fecha_transaccion),
+  mes = month(fecha_transaccion),
+  trimestre = quarter(fecha_transaccion),
+  dia_semana = wday(fecha_transaccion, label = TRUE),
+  es_fin_semana = wday(fecha_transaccion) %in% c(1, 7),
+  hora_estimada = sample(8:22, 50000, replace = TRUE)  # Hora estimada de compra
+)]
+
+# Dataset de sensores IoT para análisis en tiempo real
+sensores_iot <- data.table(
+  timestamp = seq(as.POSIXct("2024-01-01 00:00:00"), 
+                 as.POSIXct("2024-01-31 23:59:00"), by = "5 min"),
+  sensor_id = rep(paste0("SENSOR_", sprintf("%03d", 1:100)), length.out = 8928),
+  temperatura = round(rnorm(8928, 22, 4), 2),
+  humedad = pmax(20, pmin(90, round(rnorm(8928, 45, 15), 1))),
+  presion = round(rnorm(8928, 1013, 8), 1),
+  luminosidad = pmax(0, round(rnorm(8928, 500, 200))),
+  movimiento_detectado = rbinom(8928, 1, 0.15),
+  nivel_bateria = pmax(5, pmin(100, round(rnorm(8928, 85, 20))))
+)
+
+# Crear alertas y anomalías
+sensores_iot[, `:=`(
+  fecha = as.Date(timestamp),
+  hora = hour(timestamp),
+  alerta_temperatura = as.numeric(temperatura > 30 | temperatura < 10),
+  alerta_bateria = as.numeric(nivel_bateria < 20),
+  alerta_humedad = as.numeric(humedad > 80 | humedad < 30),
+  estado_sensor = fifelse(nivel_bateria < 10, "Crítico",
+                 fifelse(nivel_bateria < 30, "Advertencia", "Normal"))
+)]
+```
+
+## Aplicaciones Shiny Escalables con data.table
+
+### 1. **Arquitectura de App Shiny Profesional**
+
+```{r}
+#| label: shiny-arquitectura
+#| echo: true
+#| eval: false
+
+# Estructura modular para apps grandes
+library(shiny)
+library(shinydashboard)
+library(data.table)
+library(DT)
+library(ggplot2)
+library(plotly)
+
+# === MÓDULO: Data Processing ===
+# Todas las operaciones data.table en funciones separadas
+process_customer_data <- function(clientes_dt, filters = list()) {
+  # Aplicar filtros dinámicamente
+  result <- clientes_dt
+  
+  if(!is.null(filters$region) && filters$region != "Todos") {
+    result <- result[region == filters$region]
+  }
+  
+  if(!is.null(filters$edad_min)) {
+    result <- result[edad >= filters$edad_min]
+  }
+  
+  if(!is.null(filters$fecha_desde)) {
+    # Aquí se aplicarían filtros de fecha si tuviéramos esos datos
+  }
+  
+  return(result)
+}
+
+calculate_customer_metrics <- function(clientes_dt) {
+  clientes_dt[,
+    .(
+      total_clientes = .N,
+      edad_promedio = round(mean(edad), 1),
+      ingresos_promedio = round(mean(ingresos), 0),
+      satisfaccion_promedio = round(mean(satisfaccion), 2),
+      churn_rate = round(mean(churn_flag) * 100, 1),
+      valor_promedio = round(mean(valor_cliente), 2),
+      engagement_promedio = round(mean(engagement_score), 2)
+    ),
+    by = .(region, categoria_ingresos)
+  ]
+}
+
+# === UI: Dashboard Layout ===
+ui <- dashboardPage(
+  dashboardHeader(title = "Customer Analytics - Powered by data.table"),
+  
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Overview", tabName = "overview", icon = icon("dashboard")),
+      menuItem("Clientes", tabName = "clientes", icon = icon("users")),
+      menuItem("Segmentación", tabName = "segmentacion", icon = icon("chart-pie")),
+      menuItem("Predicciones", tabName = "predicciones", icon = icon("brain")),
+      menuItem("Datos Raw", tabName = "datos", icon = icon("table"))
+    )
+  ),
+  
+  dashboardBody(
+    tags$head(
+      tags$style(HTML("
+        .content-wrapper, .right-side {
+          background-color: #f4f4f4;
+        }
+        .main-header .navbar {
+          background-color: #2E8B57 !important;
+        }
+      "))
+    ),
+    
+    tabItems(
+      # Tab Overview
+      tabItem(tabName = "overview",
+        fluidRow(
+          valueBoxOutput("total_clientes"),
+          valueBoxOutput("churn_rate"),
+          valueBoxOutput("valor_promedio")
+        ),
+        fluidRow(
+          box(
+            title = "Filtros Globales", status = "primary", solidHeader = TRUE,
+            width = 3,
+            selectInput("region_filter", "Región:",
+                       choices = c("Todos", unique(datos_clientes$region)),
+                       selected = "Todos"),
+            sliderInput("edad_range", "Rango de Edad:",
+                       min = 18, max = 80, value = c(18, 80)),
+            actionButton("aplicar_filtros", "Aplicar Filtros", 
+                        class = "btn-primary")
+          ),
+          box(
+            title = "Revenue por Región", status = "success", solidHeader = TRUE,
+            width = 9,
+            plotlyOutput("revenue_plot", height = "400px")
+          )
+        )
+      ),
+      
+      # Tab Clientes
+      tabItem(tabName = "clientes",
+        fluidRow(
+          box(
+            title = "Análisis de Clientes", status = "primary", solidHeader = TRUE,
+            width = 12,
+            DT::dataTableOutput("clientes_table")
+          )
+        )
+      ),
+      
+      # Tab Segmentación
+      tabItem(tabName = "segmentacion",
+        fluidRow(
+          box(
+            title = "Segmentación por Valor", status = "warning", solidHeader = TRUE,
+            width = 6,
+            plotOutput("segmentacion_plot")
+          ),
+          box(
+            title = "Matriz de Retención", status = "info", solidHeader = TRUE,
+            width = 6,
+            plotOutput("matriz_retencion")
+          )
+        )
+      )
+    )
+  )
+)
+
+# === SERVER: Lógica Reactiva ===
+server <- function(input, output, session) {
+  
+  # Datos reactivos - aquí brilla data.table
+  datos_filtrados <- reactive({
+    input$aplicar_filtros  # Dependencia del botón
+    
+    isolate({
+      filtros <- list(
+        region = input$region_filter,
+        edad_min = input$edad_range[1],
+        edad_max = input$edad_range[2]
+      )
+      
+      result <- datos_clientes[
+        edad >= filtros$edad_min & edad <= filtros$edad_max
+      ]
+      
+      if(filtros$region != "Todos") {
+        result <- result[region == filtros$region]
+      }
+      
+      return(result)
+    })
+  })
+  
+  # ValueBoxes
+  output$total_clientes <- renderValueBox({
+    valueBox(
+      value = comma(nrow(datos_filtrados())),
+      subtitle = "Total Clientes",
+      icon = icon("users"),
+      color = "blue"
+    )
+  })
+  
+  output$churn_rate <- renderValueBox({
+    rate <- round(mean(datos_filtrados()$churn_flag) * 100, 1)
+    valueBox(
+      value = paste0(rate, "%"),
+      subtitle = "Tasa de Churn",
+      icon = icon("exclamation-triangle"),
+      color = if(rate > 15) "red" else if(rate > 10) "yellow" else "green"
+    )
+  })
+  
+  output$valor_promedio <- renderValueBox({
+    valor <- round(mean(datos_filtrados()$valor_cliente), 2)
+    valueBox(
+      value = dollar(valor),
+      subtitle = "Valor Promedio",
+      icon = icon("dollar-sign"),
+      color = "green"
+    )
+  })
+  
+  # Gráfico principal
+  output$revenue_plot <- renderPlotly({
+    # Cálculo super rápido con data.table
+    plot_data <- datos_filtrados()[,
+      .(
+        valor_total = sum(valor_cliente),
+        clientes = .N,
+        satisfaccion_avg = round(mean(satisfaccion), 2)
+      ),
+      by = region
+    ]
+    
+    p <- ggplot(plot_data, aes(x = reorder(region, valor_total), y = valor_total)) +
+      geom_col(aes(fill = satisfaccion_avg), alpha = 0.8) +
+      geom_text(aes(label = dollar(valor_total, scale = 1e-3, suffix = "K")), 
+               hjust = -0.1) +
+      scale_fill_viridis_c(name = "Satisfacción\nPromedio") +
+      coord_flip() +
+      labs(title = "Valor Total por Región", x = "Región", y = "Valor Total") +
+      theme_minimal()
+    
+    ggplotly(p)
+  })
+  
+  # Tabla de clientes
+  output$clientes_table <- DT::renderDataTable({
+    tabla_data <- datos_filtrados()[,
+      .(
+        cliente_id, edad, region, 
+        ingresos = dollar(ingresos),
+        valor_cliente = round(valor_cliente, 2),
+        satisfaccion,
+        engagement_score = round(engagement_score, 2),
+        riesgo_churn = ifelse(riesgo_churn == 1, "Alto", "Bajo"),
+        es_vip = ifelse(cliente_vip == 1, "Sí", "No")
+      )
+    ]
+    
+    DT::datatable(
+      tabla_data,
+      options = list(pageLength = 25, scrollX = TRUE),
+      rownames = FALSE
+    ) %>%
+      DT::formatStyle(
+        "riesgo_churn",
+        backgroundColor = DT::styleEqual("Alto", "#ffebee")
+      ) %>%
+      DT::formatStyle(
+        "es_vip",
+        backgroundColor = DT::styleEqual("Sí", "#e8f5e8")
+      )
+  })
+}
+
+# Lanzar la app
+# shinyApp(ui = ui, server = server)
+```
+
+### 2. **Optimización de Performance en Shiny**
+
+```{r}
+#| label: shiny-performance
+#| echo: true
+#| eval: false
+
+# === TÉCNICAS DE OPTIMIZACIÓN ===
+
+# 1. Pre-procesar datos pesados al inicio
+onSessionStart <- function(session) {
+  # Cálculos que no cambian frecuentemente
+  session$userData$metricas_estaticas <- datos_clientes[,
+    .(
+      clientes_por_region = .N,
+      valor_total = sum(valor_cliente),
+      edad_promedio = mean(edad)
+    ),
+    by = region
+  ]
+  
+  # Índices para búsquedas rápidas
+  setkey(session$userData$clientes_dt, cliente_id)
+  setindex(session$userData$clientes_dt, region, categoria_ingresos)
+}
+
+# 2. Usar reactive values para cache inteligente
+server <- function(input, output, session) {
+  # Cache de cálculos costosos
+  cache_metricas <- reactiveValues()
+  
+  # Solo recalcular cuando cambien inputs relevantes
+  observe({
+    key <- paste(input$region_filter, input$edad_range[1], input$edad_range[2], sep = "_")
+    
+    if(is.null(cache_metricas[[key]])) {
+      cache_metricas[[key]] <- calculate_customer_metrics(
+        datos_clientes[
+          region %in% input$region_filter & 
+          edad %between% input$edad_range
+        ]
+      )
+    }
+  })
+  
+  # 3. Renderizado condicional
+  output$tabla_grande <- DT::renderDataTable({
+    # Solo renderizar si la pestaña está visible
+    req(input$tabs == "datos_detallados")
+    
+    # data.table operation ultrarrápida
+    datos_tabla <- datos_filtrados()[,
+      .(cliente_id, region, valor_cliente, churn_flag)
+    ][order(-valor_cliente)]
+    
+    DT::datatable(datos_tabla, options = list(pageLength = 50))
+  })
+}
+
+# 4. Módulos para escalabilidad
+customerMetricsUI <- function(id) {
+  ns <- NS(id)
+  tagList(
+    valueBoxOutput(ns("total_value")),
+    plotOutput(ns("distribution_plot"))
+  )
+}
+
+customerMetricsServer <- function(id, data) {
+  moduleServer(id, function(input, output, session) {
+    output$total_value <- renderValueBox({
+      # Cálculo modular con data.table
+      total <- data()[, sum(valor_cliente)]
+      valueBox(
+        value = dollar(total, scale = 1e-6, suffix = "M"),
+        subtitle = "Valor Total",
+        icon = icon("chart-line"),
+        color = "green"
+      )
+    })
+  })
+}
+```
+
+## Integración con tidymodels: Machine Learning Robusto
+
+### 1. **Workflow Completo: data.table → tidymodels → data.table**
+
+```{r}
+#| label: tidymodels-workflow
+#| echo: true
+
+# PASO 1: Feature Engineering con data.table (ultrarrápido)
+preparar_datos_ml <- function(clientes_dt, transacciones_dt) {
+  # Calcular métricas de transacciones por cliente
+  metricas_transaccionales <- transacciones_dt[, monto_final := monto * (1 - descuento_aplicado)][
+    fecha_transaccion >= Sys.Date() - 365,  # Último año
+    .(
+      transacciones_año = .N,
+      monto_total_año = sum(monto_final),
+      monto_promedio = round(mean(monto_final), 2),
+      categorias_compradas = uniqueN(producto_categoria),
+      canal_principal = names(sort(table(canal), decreasing = TRUE))[1],
+      frecuencia_compra_dias = as.numeric(max(fecha_transaccion) - min(fecha_transaccion)) / .N,
+      usa_descuentos = mean(descuento_aplicado > 0),
+      tasa_devolucion = mean(es_devolucion)
+    ),
+    by = cliente_id
+  ]
+  
+  # Unir con datos de clientes
+  datos_completos <- clientes_dt[metricas_transaccionales, on = .(cliente_id)]
+  
+  # Feature engineering adicional
+  datos_completos[, `:=`(
+    # Variables de interacción
+    ingresos_edad_ratio = ingresos / edad,
+    valor_por_producto = valor_cliente / num_productos,
+    engagement_per_month = engagement_score / pmax(antiguedad_meses, 1),
+    
+    # Variables categóricas optimizadas
+    segmento_valor = cut(valor_cliente, 
+                        breaks = quantile(valor_cliente, c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE),
+                        labels = c("Bajo", "Medio-Bajo", "Medio-Alto", "Alto"),
+                        include.lowest = TRUE),
+    
+    # Variables binarias
+    cliente_frecuente = as.numeric(transacciones_año > quantile(transacciones_año, 0.75, na.rm = TRUE)),
+    multicanal = as.numeric(categorias_compradas >= 3),
+    
+    # Target variable limpia
+    churn = factor(ifelse(churn_flag == 1, "Si", "No"), levels = c("No", "Si"))
+  )]
+  
+  # Remover casos con NAs en variables críticas
+  datos_limpios <- datos_completos[
+    !is.na(transacciones_año) & 
+    !is.na(monto_total_año) & 
+    !is.na(churn)
+  ]
+  
+  return(datos_limpios)
+}
+
+# Ejecutar preparación
+datos_ml <- preparar_datos_ml(datos_clientes, transacciones_detalle)
+
+cat("Datos preparados para ML:\n")
+cat("- Filas:", nrow(datos_ml), "\n")
+cat("- Columnas:", ncol(datos_ml), "\n")
+cat("- Distribución de churn:\n")
+print(datos_ml[, .N, by = churn])
+```
+
+### 2. **Modelado con tidymodels (Ejemplo Conceptual)**
+
+```{r}
+#| label: tidymodels-modeling
+#| echo: true
+#| eval: false
+
+# Ejemplo de workflow completo con tidymodels
+library(tidymodels)
+library(themis)  # Para balanceo de clases
+
+# PASO 2: Convertir a tibble para tidymodels
+datos_tibble <- as_tibble(datos_ml)
+
+# PASO 3: Split de datos
+set.seed(123)
+data_split <- initial_split(
+  datos_tibble, 
+  prop = 0.8, 
+  strata = churn
+)
+
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# PASO 4: Receta de preprocesamiento
+receta_churn <- recipe(churn ~ ., data = train_data) %>%
+  # Remover variables no predictivas
+  step_rm(cliente_id, churn_flag) %>%
+  
+  # Imputación de NAs
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  # Feature engineering
+  step_log(ingresos, valor_cliente, offset = 1) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  
+  # Variables dummy
+  step_dummy(all_nominal_predictors()) %>%
+  
+  # Balanceo de clases
+  step_downsample(churn, under_ratio = 2) %>%
+  
+  # Remover variables con varianza cero
+  step_zv(all_predictors()) %>%
+  
+  # Correlación alta
+  step_corr(all_numeric_predictors(), threshold = 0.9)
+
+# PASO 5: Modelos
+modelo_rf <- rand_forest(
+  trees = tune(),
+  mtry = tune(),
+  min_n = tune()
+) %>%
+  set_mode("classification") %>%
+  set_engine("randomForest")
+
+modelo_xgb <- boost_tree(
+  trees = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  min_n = tune()
+) %>%
+  set_mode("classification") %>%
+  set_engine("xgboost")
+
+# PASO 6: Workflows
+workflow_rf <- workflow() %>%
+  add_recipe(receta_churn) %>%
+  add_model(modelo_rf)
+
+workflow_xgb <- workflow() %>%
+  add_recipe(receta_churn) %>%
+  add_model(modelo_xgb)
+
+# PASO 7: Cross-validation y tuning
+cv_folds <- vfold_cv(train_data, v = 5, strata = churn)
+
+# Tuning Random Forest
+tune_rf <- workflow_rf %>%
+  tune_grid(
+    resamples = cv_folds,
+    grid = 20,
+    metrics = metric_set(roc_auc, precision, recall, f_meas)
+  )
+
+# PASO 8: Mejor modelo
+best_rf <- select_best(tune_rf, metric = "roc_auc")
+final_workflow_rf <- finalize_workflow(workflow_rf, best_rf)
+
+# PASO 9: Fit final y predicciones
+modelo_final <- fit(final_workflow_rf, train_data)
+predicciones <- predict(modelo_final, test_data, type = "prob")
+
+# Métricas de evaluación
+metricas_modelo <- test_data %>%
+  cbind(predicciones) %>%
+  mutate(pred = factor(fifelse(.pred_Si >= 0.5, 1, 0), levels = c(0, 1), labels = c("No", "Si"))) %>% 
+  metrics(truth = churn, pred)
+
+print(metricas_modelo)
+```
+
+### 3. **Post-procesamiento y Análisis con data.table**
+
+```{r}
+#| label: post-procesamiento-ml
+#| echo: true
+
+# Simular predicciones para el ejemplo (en producción vendrían del modelo)
+set.seed(789)
+predicciones_simuladas <- data.table(
+  cliente_id = datos_ml[sample(.N, 2000), cliente_id],
+  prob_churn = runif(2000, 0, 1),
+  pred_churn = sample(c("Si", "No"), 2000, replace = TRUE, prob = c(0.15, 0.85)),
+  confidence_score = runif(2000, 0.6, 0.95)
+)
+
+# ANÁLISIS DE RESULTADOS con data.table
+# Unir predicciones con datos originales
+resultados_ml <- datos_ml[predicciones_simuladas, on = .(cliente_id)]
+
+# Análisis de segmentos de riesgo
+analisis_riesgo <- resultados_ml[,
+  .(
+    clientes_total = .N,
+    churn_predicho = sum(pred_churn == "Si"),
+    prob_churn_media = round(mean(prob_churn), 3),
+    valor_en_riesgo = sum(valor_cliente[pred_churn == "Si"]),
+    revenue_en_riesgo = sum(monto_total_año[pred_churn == "Si"], na.rm = TRUE),
+    ingresos_promedio = round(mean(ingresos), 0),
+    engagement_promedio = round(mean(engagement_score), 2)
+  ),
+  by = .(region, categoria_ingresos)
+][order(-valor_en_riesgo)]
+
+cat("=== ANÁLISIS DE RIESGO DE CHURN POR SEGMENTO ===\n")
+print(analisis_riesgo)
+
+# Identificar clientes de alta prioridad para retención
+clientes_retencion <- resultados_ml[
+  pred_churn == "Si" & 
+  prob_churn > 0.7 & 
+  valor_cliente > quantile(resultados_ml$valor_cliente, 0.7, na.rm = TRUE),
+  .(
+    cliente_id, region, edad, ingresos, valor_cliente,
+    prob_churn = round(prob_churn, 3),
+    transacciones_año, monto_total_año,
+    satisfaccion, engagement_score,
+    accion_recomendada = fcase(
+      satisfaccion < 3, "Mejora_Servicio",
+      engagement_score < 5, "Aumentar_Engagement", 
+      monto_total_año < 1000, "Incentivo_Compra",
+      default = "Programa_Lealtad"
+    )
+  )
+][order(-valor_cliente)]
+
+cat("\n=== TOP 10 CLIENTES PARA RETENCIÓN INMEDIATA ===\n")
+print(head(clientes_retencion, 10))
+
+# Análisis de efectividad del modelo por segmento
+if(nrow(resultados_ml[!is.na(churn_flag)]) > 0) {
+  efectividad_modelo <- resultados_ml[!is.na(churn_flag),
+    .(
+      precision = sum(pred_churn == "Si" & churn == "Si") / sum(pred_churn == "Si"),
+      recall = sum(pred_churn == "Si" & churn == "Si") / sum(churn == "Si"),
+      accuracy = mean(pred_churn == churn),
+      clientes_evaluados = .N
+    ),
+    by = .(region, categoria_edad)
+  ][clientes_evaluados >= 10]  # Solo segmentos con suficientes datos
+  
+  cat("\n=== EFECTIVIDAD DEL MODELO POR SEGMENTO ===\n")
+  print(head(efectividad_modelo[order(-accuracy)]))
+}
+```
+
+## dtplyr: El Puente Entre data.table y tidyverse
+
+### 1. **Introducción y Casos de Uso**
+
+```{r}
+#| label: dtplyr-introduccion
+#| echo: true
+
+if(requireNamespace("dtplyr", quietly = TRUE) && requireNamespace("dplyr", quietly = TRUE)) {
+  library(dtplyr)
+  library(dplyr, warn.conflicts = FALSE)
+  
+  # Convertir data.table a lazy_dt
+  clientes_lazy <- lazy_dt(datos_clientes)
+  
+  # Workflow con sintaxis dplyr que se traduce a data.table
+  analisis_dtplyr <- clientes_lazy %>%
+    filter(edad >= 25, edad <= 65) %>%
+    mutate(
+      categoria_valor = case_when(
+        valor_cliente >= quantile(valor_cliente, 0.8) ~ "Premium",
+        valor_cliente >= quantile(valor_cliente, 0.5) ~ "Standard",
+        TRUE ~ "Basic"
+      ),
+      riesgo_total = riesgo_churn + (5 - satisfaccion) / 5
+    ) %>%
+    group_by(region, categoria_valor) %>%
+    summarise(
+      clientes = n(),
+      valor_promedio = round(mean(valor_cliente), 2),
+      engagement_promedio = round(mean(engagement_score), 2),
+      churn_rate = round(mean(churn_flag) * 100, 1),
+      riesgo_promedio = round(mean(riesgo_total), 2),
+      .groups = 'drop'
+    ) %>%
+    arrange(desc(valor_promedio)) %>%
+    as.data.table()  # Convertir de vuelta a data.table
+  
+  print("Resultado del análisis con dtplyr:")
+  print(head(analisis_dtplyr, 10))
+  
+  # Ver el código data.table generado
+  cat("\n=== CÓDIGO DATA.TABLE GENERADO POR DTPLYR ===\n")
+  codigo_generado <- clientes_lazy %>%
+    filter(edad >= 25, edad <= 65) %>%
+    group_by(region) %>%
+    summarise(valor_promedio = mean(valor_cliente), .groups = 'drop') %>%
+    show_query()
+  
+} else {
+  cat("💡 Para usar dtplyr, instala los paquetes:\n")
+  cat("install.packages(c('dtplyr', 'dplyr'))\n")
+}
+```
+
+### 2. **Comparación de Performance: dtplyr vs dplyr puro**
+
+```{r}
+#| label: dtplyr-performance
+#| echo: true
+
+if(requireNamespace("dtplyr", quietly = TRUE) && requireNamespace("dplyr", quietly = TRUE)) {
+  library(microbenchmark)
+  
+  # Crear dataset más grande para benchmark
+  datos_benchmark <- rbindlist(replicate(5, datos_clientes, simplify = FALSE))
+  
+  # Operación compleja para comparar
+  operacion_compleja <- function(data, metodo) {
+    if(metodo == "dplyr") {
+      # dplyr puro sobre data.frame
+      as.data.frame(data) %>%
+        filter(edad >= 30, satisfaccion >= 3) %>%
+        group_by(region, categoria_ingresos) %>%
+        summarise(
+          clientes = n(),
+          valor_total = sum(valor_cliente),
+          engagement_avg = mean(engagement_score),
+          .groups = 'drop'
+        ) %>%
+        arrange(desc(valor_total))
+    } else if(metodo == "dtplyr") {
+      # dtplyr (sintaxis dplyr + motor data.table)
+      lazy_dt(data) %>%
+        filter(edad >= 30, satisfaccion >= 3) %>%
+        group_by(region, categoria_ingresos) %>%
+        summarise(
+          clientes = n(),
+          valor_total = sum(valor_cliente),
+          engagement_avg = mean(engagement_score),
+          .groups = 'drop'
+        ) %>%
+        arrange(desc(valor_total)) %>%
+        as.data.table()
+    } else {
+      # data.table puro
+      data[
+        edad >= 30 & satisfaccion >= 3,
+        .(
+          clientes = .N,
+          valor_total = sum(valor_cliente),
+          engagement_avg = mean(engagement_score)
+        ),
+        by = .(region, categoria_ingresos)
+      ][order(-valor_total)]
+    }
+  }
+  
+  # Benchmark
+  benchmark_results <- microbenchmark(
+    dplyr_puro = operacion_compleja(datos_benchmark, "dplyr"),
+    dtplyr = operacion_compleja(datos_benchmark, "dtplyr"),
+    data_table = operacion_compleja(datos_benchmark, "data.table"),
+    times = 10
+  )
+  
+  cat("=== BENCHMARK DE PERFORMANCE ===\n")
+  print(benchmark_results)
+  
+  # Calcular speedup
+  medias <- aggregate(time ~ expr, data = benchmark_results, FUN = mean)
+  medias$speedup <- medias$time[medias$expr == "dplyr_puro"] / medias$time
+  
+  cat("\n=== SPEEDUP RELATIVO (vs dplyr puro) ===\n")
+  print(medias[, c("expr", "speedup")])
+  
+} else {
+  cat("Benchmark requiere dtplyr y dplyr instalados\n")
+}
+```
+
+## Conexión con Bases de Datos y Big Data
+
+### 1. **Lectura/Escritura Eficiente con fread/fwrite**
+
+```{r}
+#| label: io-eficiente
+#| echo: true
+
+# === FREAD: Lectura ultrarrápida ===
+# Crear archivo de ejemplo grande
+archivo_test <- tempfile(fileext = ".csv")
+
+# Generar datos sintéticos para el ejemplo
+datos_grandes <- data.table(
+  id = 1:100000,
+  timestamp = seq(as.POSIXct("2024-01-01"), by = "min", length.out = 100000),
+  sensor_value = round(rnorm(100000, 50, 15), 2),
+  location = sample(c("Factory_A", "Factory_B", "Factory_C"), 100000, replace = TRUE),
+  quality_score = round(runif(100000, 0.8, 1.0), 3),
+  batch_id = sample(1:1000, 100000, replace = TRUE)
+)
+
+# Escribir archivo
+cat("Escribiendo archivo de prueba...\n")
+tiempo_write <- system.time({
+  fwrite(datos_grandes, archivo_test, 
+         nThread = getDTthreads(),
+         showProgress = FALSE)
+})
+
+# Información del archivo
+info_archivo <- file.info(archivo_test)
+cat("Archivo creado:", round(info_archivo$size / 1024^2, 2), "MB\n")
+cat("Tiempo de escritura:", round(tiempo_write[3], 3), "segundos\n")
+
+# Lectura con diferentes configuraciones
+cat("\n=== COMPARACIÓN DE MÉTODOS DE LECTURA ===\n")
+
+# 1. fread básico
+tiempo_fread_basico <- system.time({
+  datos_fread <- fread(archivo_test, showProgress = FALSE)
+})
+
+# 2. fread optimizado
+tiempo_fread_opt <- system.time({
+  datos_fread_opt <- fread(
+    archivo_test,
+    nThread = getDTthreads(),
+    select = c("id", "timestamp", "sensor_value", "location"),  # Solo columnas necesarias
+    colClasses = list(character = "location", numeric = c("sensor_value")),
+    showProgress = FALSE
+  )
+})
+
+# 3. read.csv para comparación
+tiempo_base_r <- system.time({
+  datos_base <- read.csv(archivo_test, stringsAsFactors = FALSE)
+})
+
+cat("fread básico:", round(tiempo_fread_basico[3], 3), "segundos\n")
+cat("fread optimizado:", round(tiempo_fread_opt[3], 3), "segundos\n")
+cat("read.csv (base R):", round(tiempo_base_r[3], 3), "segundos\n")
+cat("Speedup fread vs base R:", round(tiempo_base_r[3] / tiempo_fread_basico[3], 1), "x\n")
+
+# Verificar que los datos son idénticos
+cat("Datos idénticos:", identical(datos_fread$id, datos_fread_opt$id), "\n")
+
+# Limpiar
+unlink(archivo_test)
+```
+
+### 2. **Integración con Bases de Datos**
+
+```{r}
+#| label: db-integration
+#| echo: true
+#| eval: false
+
+# Ejemplo de integración con bases de datos
+library(DBI)
+library(RSQLite)  # o RPostgreSQL, RMySQL, etc.
+
+# === SETUP DE CONEXIÓN ===
+# Crear base de datos SQLite para el ejemplo
+con <- dbConnect(RSQLite::SQLite(), ":memory:")
+
+# Escribir data.table a la base de datos
+dbWriteTable(con, "clientes", datos_clientes)
+dbWriteTable(con, "transacciones", transacciones_detalle)
+
+# === WORKFLOW HÍBRIDO: SQL + data.table ===
+
+# 1. Query inicial en SQL (aprovechar índices de DB)
+query_sql <- "
+  SELECT c.cliente_id, c.region, c.edad, c.ingresos,
+         t.monto, t.fecha_transaccion, t.producto_categoria
+  FROM clientes c
+  JOIN transacciones t ON c.cliente_id = t.cliente_id
+  WHERE c.edad >= 25 AND c.edad <= 65
+    AND t.fecha_transaccion >= '2024-01-01'
+"
+
+# 2. Traer datos a data.table
+datos_query <- as.data.table(dbGetQuery(con, query_sql))
+
+# 3. Análisis complejo con data.table (más rápido que SQL)
+analisis_hibrido <- datos_query[,
+  .(
+    transacciones_total = .N,
+    monto_total = sum(monto),
+    monto_promedio = round(mean(monto), 2),
+    categorias_distintas = uniqueN(producto_categoria),
+    primera_compra = min(fecha_transaccion),
+    ultima_compra = max(fecha_transaccion)
+  ),
+  by = .(cliente_id, region)
+][, `:=`(
+  dias_activo = as.numeric(as.Date(ultima_compra) - as.Date(primera_compra)) + 1,
+  frecuencia_compra = transacciones_total / pmax(as.numeric(as.Date(ultima_compra) - as.Date(primera_compra)) + 1, 1)
+)][order(-monto_total)]
+
+# 4. Escribir resultados de vuelta a DB (opcional)
+dbWriteTable(con, "analisis_clientes", analisis_hibrido, overwrite = TRUE)
+
+# 5. Verificación
+resumen_db <- dbGetQuery(con, "SELECT COUNT(*) as clientes_analizados FROM analisis_clientes")
+cat("Clientes analizados en DB:", resumen_db$clientes_analizados, "\n")
+
+# Cerrar conexión
+dbDisconnect(con)
+
+# === MEJORES PRÁCTICAS ===
+# 1. Usar SQL para filtros iniciales y joins simples
+# 2. Traer datos a data.table para análisis complejos
+# 3. Aprovechar índices de DB para WHERE y JOIN
+# 4. Usar data.table para agregaciones complejas y feature engineering
+# 5. Escribir resultados finales de vuelta a DB si es necesario
+```
+
+### 3. **Integración con Apache Arrow/Parquet**
+
+```{r}
+#| label: arrow-integration
+#| echo: true
+#| eval: false
+
+# Ejemplo de integración con ecosistema Arrow
+library(arrow)
+
+# === ESCRITURA A PARQUET ===
+# Parquet es ultra-eficiente para datasets grandes
+archivo_parquet <- tempfile(fileext = ".parquet")
+
+# Escribir data.table a Parquet
+write_parquet(datos_clientes, archivo_parquet)
+
+# === LECTURA DESDE PARQUET ===
+# Leer directo a data.table
+datos_parquet <- read_parquet(archivo_parquet, as_data_frame = TRUE)
+setDT(datos_parquet)  # Asegurar que es data.table
+
+# === DATASETS PARTICIONADOS ===
+# Para datasets muy grandes, usar particiones
+directorio_particionado <- file.path(tempdir(), "partitioned_data")
+dir.create(directorio_particionado, showWarnings = FALSE, recursive = TRUE)
+
+# Particionar por región - método más robusto
+for(region_name in unique(datos_clientes$region)) {
+  region_data <- datos_clientes[region == region_name]
+  archivo_region <- file.path(directorio_particionado, paste0("region_", region_name, ".parquet"))
+  write_parquet(region_data, archivo_region)
+}
+
+# Verificar que los archivos se crearon correctamente
+archivos_parquet <- list.files(directorio_particionado, pattern = "\\.parquet$", full.names = TRUE)
+cat("Archivos Parquet creados:", length(archivos_parquet), "\n")
+
+# Leer dataset particionado solo si hay archivos válidos
+if(length(archivos_parquet) > 0) {
+  dataset <- open_dataset(directorio_particionado)
+} else {
+  stop("No se pudieron crear archivos Parquet válidos")
+}
+
+# Query con pushdown de predicados (muy eficiente)
+tryCatch({
+  resultado_arrow <- dataset %>%
+    filter(edad >= 30, satisfaccion >= 4) %>%
+    group_by(region) %>%
+    summarise(
+      clientes = n(),
+      valor_promedio = mean(valor_cliente),
+      ingresos_promedio = mean(ingresos)
+    ) %>%
+    collect() %>%  # Traer a memoria
+    as.data.table()  # Convertir a data.table
+  
+  print(resultado_arrow)
+}, error = function(e) {
+  cat("Error en consulta Arrow:", conditionMessage(e), "\n")
+  cat("Usando método alternativo con data.table directo...\n")
+  
+  # Fallback: usar data.table directamente
+  resultado_arrow <- datos_clientes[edad >= 30 & satisfaccion >= 4, .(
+    clientes = .N,
+    valor_promedio = mean(valor_cliente),
+    ingresos_promedio = mean(ingresos)
+  ), by = region]
+  
+  print(resultado_arrow)
+})
+
+# === VENTAJAS DEL WORKFLOW ARROW + DATA.TABLE ===
+# 1. Parquet es extremadamente eficiente en espacio
+# 2. Pushdown de predicados reduce transferencia de datos
+# 3. Compatibilidad con otros lenguajes (Python, Spark)
+# 4. data.table para análisis final en R
+```
+
+## Casos de Uso Industriales Reales
+
+### 1. **Sistema de Monitoreo IoT en Tiempo Real**
+
+```{r}
+#| label: iot-monitoring
+#| echo: true
+
+# === ANÁLISIS DE SENSORES IOT ===
+# Simular análisis en tiempo real de sensores
+
+# Función para procesar batch de datos de sensores
+procesar_batch_sensores <- function(datos_sensores, ventana_horas = 1) {
+  # Análisis de anomalías en tiempo real
+  datos_sensores[,
+    `:=`(
+      temp_anomaly = abs(temperatura - mean(temperatura)) > 2 * sd(temperatura),
+      humidity_anomaly = abs(humedad - mean(humedad)) > 2 * sd(humedad),
+      battery_critical = nivel_bateria < 15
+    ),
+    by = .(sensor_id, fecha)
+  ]
+  
+  # Resumen por sensor y hora
+  resumen_sensores <- datos_sensores[,
+    .(
+      temp_promedio = round(mean(temperatura), 2),
+      temp_min = min(temperatura),
+      temp_max = max(temperatura),
+      humedad_promedio = round(mean(humedad), 1),
+      presion_promedio = round(mean(presion), 1),
+      movimientos_detectados = sum(movimiento_detectado),
+      anomalias_temp = sum(temp_anomaly),
+      anomalias_humedad = sum(humidity_anomaly),
+      alertas_bateria = sum(battery_critical),
+      lecturas_total = .N,
+      uptime_pct = round((1 - sum(is.na(temperatura)) / .N) * 100, 1)
+    ),
+    by = .(sensor_id, fecha, hora)
+  ][, `:=`(
+    estado_sensor = fcase(
+      alertas_bateria > 0, "CRÍTICO",
+      anomalias_temp + anomalias_humedad > 5, "ADVERTENCIA",
+      uptime_pct < 95, "DEGRADADO",
+      default = "NORMAL"
+    ),
+    score_salud = pmin(100, uptime_pct - (anomalias_temp + anomalias_humedad) * 5 - alertas_bateria * 20)
+  )]
+  
+  return(resumen_sensores)
+}
+
+# Procesar datos de sensores
+analisis_sensores <- procesar_batch_sensores(sensores_iot)
+
+# Dashboard de alertas críticas
+alertas_criticas <- analisis_sensores[
+  estado_sensor %in% c("CRÍTICO", "ADVERTENCIA"),
+  .(
+    sensor_id, fecha, hora,
+    estado_sensor, score_salud,
+    anomalias_temp, anomalias_humedad, alertas_bateria,
+    accion_requerida = fcase(
+      alertas_bateria > 0, "Cambiar_Batería",
+      anomalias_temp > 3, "Revisar_Sensor_Temperatura",
+      anomalias_humedad > 3, "Revisar_Sensor_Humedad",
+      default = "Inspección_General"
+    )
+  )
+][order(fecha, hora, -score_salud)]
+
+cat("=== ALERTAS CRÍTICAS DEL SISTEMA IOT ===\n")
+print(head(alertas_criticas, 15))
+
+# Estadísticas de salud del sistema
+salud_sistema <- analisis_sensores[,
+  .(
+    sensores_activos = uniqueN(sensor_id),
+    sensores_criticos = uniqueN(sensor_id[estado_sensor == "CRÍTICO"]),
+    sensores_degradados = uniqueN(sensor_id[estado_sensor %in% c("ADVERTENCIA", "DEGRADADO")]),
+    score_salud_promedio = round(mean(score_salud), 1),
+    anomalias_totales = sum(anomalias_temp + anomalias_humedad),
+    uptime_sistema = round(mean(uptime_pct), 1)
+  ),
+  by = .(fecha)
+]
+
+cat("\n=== SALUD GENERAL DEL SISTEMA ===\n")
+print(head(salud_sistema))
+```
+
+### 2. **Sistema de Recomendaciones E-commerce**
+
+```{r}
+#| label: recommender-system
+#| echo: true
+
+# === MOTOR DE RECOMENDACIONES ===
+# Sistema basado en comportamiento de compra
+
+# Función para calcular similaridad entre clientes
+calcular_recomendaciones <- function(transacciones_dt, cliente_target, top_n = 5) {
+  
+  # Matriz de compras por cliente-categoría
+  matriz_compras <- transacciones_dt[,
+    .(
+      total_comprado = sum(monto_final),
+      frecuencia = .N
+    ),
+    by = .(cliente_id, producto_categoria)
+  ]
+  
+  # Perfil del cliente target
+  perfil_target <- matriz_compras[cliente_id == cliente_target]
+  
+  if(nrow(perfil_target) == 0) {
+    return(data.table(mensaje = "Cliente no encontrado"))
+  }
+  
+  # Encontrar clientes similares
+  clientes_similares <- matriz_compras[
+    producto_categoria %in% perfil_target$producto_categoria & 
+    cliente_id != cliente_target,
+    .(
+      overlap_categorias = .N,
+      valor_similar = sum(total_comprado)
+    ),
+    by = cliente_id
+  ][overlap_categorias >= 2][order(-overlap_categorias, -valor_similar)]
+  
+  # Recomendaciones basadas en clientes similares
+  if(nrow(clientes_similares) > 0) {
+    recomendaciones <- matriz_compras[
+      cliente_id %in% head(clientes_similares$cliente_id, 20) &
+      !producto_categoria %in% perfil_target$producto_categoria,
+      .(
+        score_recomendacion = sum(total_comprado),
+        clientes_que_compran = .N,
+        frecuencia_promedio = round(mean(frecuencia), 1)
+      ),
+      by = producto_categoria
+    ][clientes_que_compran >= 3][order(-score_recomendacion)][1:top_n]
+    
+    return(recomendaciones)
+  } else {
+    return(data.table(mensaje = "No hay suficientes datos para recomendaciones"))
+  }
+}
+
+# Función para análisis de mercado
+analizar_tendencias_mercado <- function(transacciones_dt, periodo_dias = 30) {
+  fecha_corte <- max(transacciones_dt$fecha_transaccion) - periodo_dias
+  
+  tendencias <- transacciones_dt[
+    fecha_transaccion >= fecha_corte,
+    .(
+      ventas_recientes = sum(monto_final),
+      transacciones_recientes = .N,
+      clientes_unicos = uniqueN(cliente_id),
+      ticket_promedio = round(mean(monto_final), 2),
+      crecimiento_semanal = .N / (periodo_dias / 7)
+    ),
+    by = producto_categoria
+  ][order(-ventas_recientes)]
+  
+  # Calcular métricas adicionales
+  tendencias[, `:=`(
+    penetracion_mercado = round((clientes_unicos / uniqueN(transacciones_dt$cliente_id)) * 100, 1),
+    velocidad_venta = round(transacciones_recientes / periodo_dias, 2),
+    categoria_trend = fcase(
+      crecimiento_semanal > quantile(crecimiento_semanal, 0.75), "📈 CRECIENTE",
+      crecimiento_semanal < quantile(crecimiento_semanal, 0.25), "📉 DECLINANTE",
+      default = "➡️ ESTABLE"
+    )
+  )]
+  
+  return(tendencias)
+}
+
+# Ejecutar análisis de recomendaciones
+cliente_ejemplo <- datos_clientes[sample(.N, 1), cliente_id]
+recomendaciones <- calcular_recomendaciones(transacciones_detalle, cliente_ejemplo)
+
+cat("=== RECOMENDACIONES PARA CLIENTE", cliente_ejemplo, "===\n")
+print(recomendaciones)
+
+# Análisis de tendencias de mercado
+tendencias_mercado <- analizar_tendencias_mercado(transacciones_detalle, 60)
+
+cat("\n=== TENDENCIAS DE MERCADO (últimos 60 días) ===\n")
+print(tendencias_mercado)
+
+# Análisis de cohorstes de clientes
+analisis_cohortes <- transacciones_detalle[,
+  .(
+    primera_compra = min(fecha_transaccion),
+    ultima_compra = max(fecha_transaccion),
+    valor_total = sum(monto_final),
+    frecuencia_compra = .N
+  ),
+  by = cliente_id
+][, `:=`(
+  cohorte_mes = format(primera_compra, "%Y-%m"),
+  dias_como_cliente = as.numeric(ultima_compra - primera_compra) + 1
+)][, `:=`(
+  valor_por_dia = round(valor_total / pmax(dias_como_cliente, 1), 2)
+)][,
+  .(
+    clientes_cohorte = .N,
+    valor_promedio_cohorte = round(mean(valor_total), 2),
+    dias_retencion_promedio = round(mean(dias_como_cliente), 1),
+    valor_por_dia_promedio = round(mean(valor_por_dia), 2)
+  ),
+  by = cohorte_mes
+][order(cohorte_mes)]
+
+cat("\n=== ANÁLISIS DE COHORTES POR MES ===\n")
+print(head(analisis_cohortes, 12))
+```
+
+## Ejercicio Final: Aplicación Completa de Producción
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 10: Sistema de Analytics Empresarial
+
+Diseña un sistema completo que integre:
+
+1. **Pipeline de datos** con data.table
+2. **Dashboard Shiny** interactivo
+3. **Modelo predictivo** con tidymodels
+4. **Alertas automáticas** 
+5. **Reportes ejecutivos**
+
+Usa los datasets de clientes, transacciones y sensores como base.
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 10
+
+```{r}
+#| label: solucion-ejercicio-10
+#| echo: true
+
+# === PIPELINE DE DATOS UNIFICADO ===
+crear_pipeline_analytics <- function() {
+  
+  # 1. CONSOLIDACIÓN DE DATOS
+  pipeline_data <- list()
+  
+  # Métricas de clientes
+  pipeline_data$clientes_kpis <- datos_clientes[,
+    .(
+      clientes_total = .N,
+      valor_total = sum(valor_cliente),
+      churn_rate = round(mean(churn_flag) * 100, 1),
+      satisfaccion_promedio = round(mean(satisfaccion), 2),
+      engagement_promedio = round(mean(engagement_score), 2)
+    ),
+    by = .(region, categoria_ingresos)
+  ]
+  
+  # Métricas de transacciones
+  pipeline_data$transacciones_kpis <- transacciones_detalle[
+    fecha_transaccion >= Sys.Date() - 90,  # Últimos 90 días
+    .(
+      revenue_total = sum(monto_final),
+      transacciones_total = .N,
+      ticket_promedio = round(mean(monto_final), 2),
+      clientes_activos = uniqueN(cliente_id),
+      productos_vendidos = sum(1 - es_devolucion)
+    ),
+    by = .(mes = month(fecha_transaccion), producto_categoria)
+  ]
+  
+  # Estado de sensores IoT
+  pipeline_data$sensores_status <- sensores_iot[
+    fecha >= Sys.Date() - 7,  # Última semana
+    .(
+      sensores_activos = uniqueN(sensor_id),
+      alertas_criticas = sum(alerta_temperatura + alerta_bateria + alerta_humedad),
+      uptime_promedio = round(mean(1 - is.na(temperatura)) * 100, 1),
+      score_salud = round(mean(100 - alerta_temperatura * 20 - alerta_bateria * 30), 1)
+    ),
+    by = fecha
+  ]
+  
+  # 2. ALERTAS AUTOMÁTICAS
+  alertas <- list()
+  
+  # Alerta de churn elevado
+  alertas$churn_critico <- pipeline_data$clientes_kpis[
+    churn_rate > 15,
+    .(region, categoria_ingresos, churn_rate, valor_total)
+  ]
+  
+  # Alerta de caída de revenue
+  alertas$revenue_bajo <- pipeline_data$transacciones_kpis[,
+    .(revenue_cambio = (revenue_total / shift(revenue_total, 1) - 1) * 100),
+    by = producto_categoria
+  ][revenue_cambio < -10 & !is.na(revenue_cambio)]
+  
+  # Alerta de sensores críticos
+  alertas$sensores_criticos <- pipeline_data$sensores_status[
+    score_salud < 80 | alertas_criticas > 10
+  ]
+  
+  # 3. DASHBOARD SUMMARY
+  dashboard_summary <- list(
+    kpis_generales = list(
+      clientes_total = sum(pipeline_data$clientes_kpis$clientes_total),
+      revenue_total = sum(pipeline_data$transacciones_kpis$revenue_total),
+      churn_promedio = round(weighted.mean(pipeline_data$clientes_kpis$churn_rate, 
+                                          pipeline_data$clientes_kpis$clientes_total), 1),
+      alertas_activas = length(alertas$churn_critico) + nrow(alertas$revenue_bajo) + nrow(alertas$sensores_criticos)
+    ),
+    alertas_activas = alertas,
+    datos_pipeline = pipeline_data
+  )
+  
+  return(dashboard_summary)
+}
+
+# Ejecutar pipeline
+sistema_analytics <- crear_pipeline_analytics()
+
+# === REPORTE EJECUTIVO AUTOMÁTICO ===
+generar_reporte_ejecutivo <- function(analytics_data) {
+  cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+  cat("                    📊 REPORTE EJECUTIVO EMPRESARIAL                     \n")
+  cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+  
+  kpis <- analytics_data$kpis_generales
+  alertas <- analytics_data$alertas_activas
+  
+  # KPIs principales
+  cat("📈 INDICADORES CLAVE DE RENDIMIENTO:\n")
+  cat("   • Total de Clientes:", scales::comma(kpis$clientes_total), "\n")
+  cat("   • Revenue Total:", scales::dollar(kpis$revenue_total), "\n")
+  cat("   • Tasa de Churn Promedio:", kpis$churn_promedio, "%\n")
+  cat("   • Alertas Activas:", kpis$alertas_activas, "\n\n")
+  
+  # Estado de alertas
+  cat("🚨 ESTADO DE ALERTAS:\n")
+  cat("   • Regiones con Churn Crítico:", nrow(alertas$churn_critico), "\n")
+  cat("   • Productos con Revenue Bajo:", nrow(alertas$revenue_bajo), "\n")
+  cat("   • Sensores en Estado Crítico:", nrow(alertas$sensores_criticos), "\n\n")
+  
+  # Recomendaciones automáticas
+  cat("💡 RECOMENDACIONES AUTOMÁTICAS:\n")
+  if(nrow(alertas$churn_critico) > 0) {
+    cat("   • ACCIÓN INMEDIATA: Implementar programa de retención en regiones críticas\n")
+  }
+  if(nrow(alertas$revenue_bajo) > 0) {
+    cat("   • ANÁLISIS REQUERIDO: Investigar caída de ventas en productos específicos\n")
+  }
+  if(nrow(alertas$sensores_criticos) > 0) {
+    cat("   • MANTENIMIENTO: Revisar sensores con bajo score de salud\n")
+  }
+  if(kpis$alertas_activas == 0) {
+    cat("   • ✅ SISTEMA SALUDABLE: Todos los indicadores dentro de rangos normales\n")
+  }
+  
+  cat("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+  cat("Reporte generado automáticamente:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+  cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+}
+
+# Generar reporte
+generar_reporte_ejecutivo(sistema_analytics)
+
+# === MÉTRICAS DETALLADAS ===
+cat("\n📊 DETALLE DE ALERTAS CRÍTICAS:\n\n")
+
+if(nrow(sistema_analytics$alertas_activas$churn_critico) > 0) {
+  cat("🔴 CHURN CRÍTICO POR REGIÓN:\n")
+  print(sistema_analytics$alertas_activas$churn_critico)
+  cat("\n")
+}
+
+if(nrow(sistema_analytics$alertas_activas$revenue_bajo) > 0) {
+  cat("📉 PRODUCTOS CON REVENUE BAJO:\n")
+  print(head(sistema_analytics$alertas_activas$revenue_bajo))
+  cat("\n")
+}
+
+if(nrow(sistema_analytics$alertas_activas$sensores_criticos) > 0) {
+  cat("⚠️ SENSORES EN ESTADO CRÍTICO:\n")
+  print(head(sistema_analytics$alertas_activas$sensores_criticos))
+}
+```
+
+**Componentes del Sistema Completo:**
+
+1. **Pipeline de Datos**: Consolidación automática de múltiples fuentes
+2. **Sistema de Alertas**: Detección automática de anomalías
+3. **Dashboard KPIs**: Métricas en tiempo real
+4. **Reporte Ejecutivo**: Generación automática de insights
+5. **Recomendaciones**: Acciones basadas en datos
+6. **Escalabilidad**: Modular y extensible
+:::
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **Shiny + data.table** = Aplicaciones web ultrarrápidas y responsivas
+2. **tidymodels** se integra perfectamente con data.table para ML robusto
+3. **dtplyr** facilita la transición desde dplyr manteniendo performance
+4. **fread/fwrite** son las herramientas más rápidas de R para I/O
+5. **Bases de datos** + data.table = Workflow híbrido óptimo
+6. **Casos reales** demuestran la versatilidad industrial de data.table
+7. **Sistemas completos** integran múltiples componentes de forma modular
+:::
+
+Has completado tu formación integral en aplicaciones del mundo real con `data.table`. Ahora tienes las herramientas para construir sistemas completos de analytics empresarial de nivel industrial.

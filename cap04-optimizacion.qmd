@@ -1,0 +1,727 @@
+# Optimización y Buenas Prácticas {#sec-optimizacion}
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **Configuración de performance** con threading y memoria
+- **Keys e índices** para búsquedas ultra-rápidas  
+- **Profiling y benchmarking** de código `data.table`
+- **Los Mandamientos de data.table**: Do's y Don'ts definitivos
+- **Debugging y troubleshooting** de código complejo
+:::
+
+```{r}
+#| label: setup-cap04
+#| include: false
+
+library(data.table)
+library(microbenchmark)
+library(ggplot2)
+library(profvis)
+library(knitr)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datasets para benchmarking
+set.seed(2024)
+
+# Dataset grande para performance testing
+big_dt <- data.table(
+  id = sample(1:100000, 1000000, replace = TRUE),
+  group = sample(LETTERS[1:20], 1000000, replace = TRUE),
+  value1 = rnorm(1000000),
+  value2 = runif(1000000, 1, 100),
+  date_col = sample(seq(as.Date("2020-01-01"), as.Date("2024-12-31"), by = "day"), 1000000, replace = TRUE),
+  category = sample(c("A", "B", "C", "D", "E"), 1000000, replace = TRUE, prob = c(0.3, 0.25, 0.2, 0.15, 0.1))
+)
+
+# Dataset para joins
+lookup_table <- data.table(
+  id = 1:100000,
+  name = paste0("Entity_", 1:100000),
+  category_desc = sample(c("Premium", "Standard", "Basic", "VIP", "Economy"), 100000, replace = TRUE),
+  weight = runif(100000, 0.1, 10)
+)
+
+# Dataset temporal para índices
+time_series_dt <- data.table(
+  timestamp = seq(as.POSIXct("2023-01-01"), as.POSIXct("2024-12-31"), by = "hour"),
+  sensor = rep(paste0("S", 1:100), length.out = 17544),
+  measurement = rnorm(17544, 25, 5),
+  quality = sample(c("Good", "Fair", "Poor"), 17544, replace = TRUE, prob = c(0.7, 0.2, 0.1))
+)
+```
+
+## Configuración de Performance
+
+### 1. **Threading: Aprovecha Todos los Núcleos**
+
+`data.table` puede usar múltiples núcleos automáticamente en operaciones como agregaciones, ordenamiento y algunas funciones:
+
+```{r}
+#| label: threading-config
+#| echo: true
+
+# Ver configuración actual
+cat("Threads disponibles en el sistema:", parallel::detectCores(), "\n")
+cat("Threads configurados en data.table:", getDTthreads(), "\n")
+
+# Configurar para usar todos los núcleos
+setDTthreads(0)  # 0 = usar todos disponibles
+cat("Después de setDTthreads(0):", getDTthreads(), "\n")
+
+# Para laptops o uso interactivo, considera limitarlo
+setDTthreads(4)  # Usar solo 4 threads
+cat("Después de setDTthreads(4):", getDTthreads(), "\n")
+```
+
+#### **Comparación de Performance con Threading**
+
+```{r}
+#| label: threading-benchmark
+#| echo: true
+#| cache: true
+
+# Preparar datos grandes para el benchmark
+sample_dt <- big_dt[sample(.N, 500000)]  # Muestra de 500k filas
+
+# Benchmark con diferentes configuraciones de threads
+benchmark_threads <- function(n_threads) {
+  setDTthreads(n_threads)
+  microbenchmark(
+    agregacion = sample_dt[, .(mean_val = mean(value1), sum_val = sum(value2)), by = .(group, category)],
+    ordenamiento = sample_dt[order(-value1, group)],
+    times = 5
+  )
+}
+
+# Comparar 1 thread vs múltiples threads
+setDTthreads(1)
+tiempo_1_thread <- system.time(sample_dt[, .(mean_val = mean(value1)), by = group])
+
+setDTthreads(4)
+tiempo_4_threads <- system.time(sample_dt[, .(mean_val = mean(value1)), by = group])
+
+cat("Tiempo con 1 thread:", round(tiempo_1_thread[3], 3), "segundos\n")
+cat("Tiempo con 4 threads:", round(tiempo_4_threads[3], 3), "segundos\n")
+cat("Speedup:", round(tiempo_1_thread[3] / tiempo_4_threads[3], 2), "x\n")
+
+# Restaurar configuración óptima
+setDTthreads(0)
+```
+
+### 2. **Memoria: Opciones de Optimización**
+
+```{r}
+#| label: memoria-config
+#| echo: true
+
+# Ver uso de memoria actual del objeto
+cat("Tamaño de big_dt:", format(object.size(big_dt), units = "MB"), "\n")
+
+# Opciones de memoria
+options(datatable.alloc.col = 1024)  # Pre-asignar espacio para nuevas columnas
+options(datatable.verbose = FALSE)   # Desactivar mensajes verbose por defecto
+
+# Ver todas las opciones relacionadas con data.table
+datatable_options <- options()[grep("datatable", names(options()))]
+str(datatable_options)
+```
+
+## Keys e Índices: El Secreto de la Velocidad
+
+### 1. **Setkey(): Ordenamiento para Velocidad**
+
+```{r}
+#| label: setkey-basico
+#| echo: true
+
+# Crear copias para comparar performance
+dt_no_key <- copy(big_dt)
+dt_con_key <- copy(big_dt)
+
+# Establecer key
+system.time(setkey(dt_con_key, group, category))
+
+# Comparar búsquedas
+tiempo_sin_key <- system.time(result1 <- dt_no_key[group == "A" & category == "A"])
+tiempo_con_key <- system.time(result2 <- dt_con_key[.("A", "A")])
+
+cat("Búsqueda sin key:", round(tiempo_sin_key[3], 4), "segundos\n")
+cat("Búsqueda con key:", round(tiempo_con_key[3], 4), "segundos\n")
+cat("Speedup:", round(tiempo_sin_key[3] / tiempo_con_key[3], 1), "x más rápido\n")
+```
+
+### 2. **Múltiples Keys para Diferentes Consultas**
+
+```{r}
+#| label: setkey-multiple
+#| echo: true
+
+# Diferentes keys para diferentes tipos de consultas
+dt_by_date <- copy(big_dt)
+dt_by_id <- copy(big_dt)
+
+setkey(dt_by_date, date_col)
+setkey(dt_by_id, id)
+
+# Verificar keys
+cat("Key de dt_by_date:", paste(key(dt_by_date), collapse = ", "), "\n")
+cat("Key de dt_by_id:", paste(key(dt_by_id), collapse = ", "), "\n")
+
+# Consultas optimizadas según el key
+fechas_recientes <- dt_by_date[date_col >= as.Date("2024-01-01")]
+ids_especificos <- dt_by_id[.(c(1, 100, 1000, 10000))]
+
+cat("Filas con fechas recientes:", nrow(fechas_recientes), "\n")
+cat("Filas con IDs específicos:", nrow(ids_especificos), "\n")
+```
+
+### 3. **Setindex(): Keys Secundarios**
+
+```{r}
+#| label: setindex-ejemplo
+#| echo: true
+
+# Crear índices secundarios sin reordenar físicamente
+dt_indexed <- copy(big_dt)
+setkey(dt_indexed, group)  # Key principal
+
+# Crear índices secundarios
+setindex(dt_indexed, category)
+setindex(dt_indexed, date_col)
+setindex(dt_indexed, id, value1)  # Índice compuesto
+
+# Ver índices creados
+cat("Key principal:", paste(key(dt_indexed), collapse = ", "), "\n")
+cat("Índices secundarios:\n")
+print(indices(dt_indexed))
+
+# Usar índices automáticamente
+resultado_indexed <- dt_indexed[category == "A" & date_col >= as.Date("2024-06-01")]
+cat("Filas encontradas con índice:", nrow(resultado_indexed), "\n")
+```
+
+## Profiling y Benchmarking
+
+### 1. **Modo Verbose para Debugging**
+
+```{r}
+#| label: verbose-mode
+#| echo: true
+
+# Activar modo verbose temporalmente
+options(datatable.verbose = TRUE)
+
+# Esta operación mostrará información detallada
+dt_sample <- big_dt[sample(.N, 1000)]
+resultado_verbose <- dt_sample[group %in% c("A", "B"), .(avg_value = mean(value1)), by = category]
+
+# Desactivar verbose
+options(datatable.verbose = FALSE)
+
+print(head(resultado_verbose))
+```
+
+### 2. **Benchmarking Sistemático**
+
+```{r}
+#| label: systematic-benchmarking
+#| echo: true
+#| cache: true
+
+# Comparar diferentes aproximaciones para la misma operación
+dt_bench <- copy(big_dt[1:100000])  # Submuestra para benchmark rápido
+
+# Método 1: Sin optimizaciones
+metodo1 <- function() {
+  dt_bench[group %in% c("A", "B", "C"), .(mean_val = mean(value1), count = .N), by = category]
+}
+
+# Método 2: Con key optimizado
+dt_bench_key <- copy(dt_bench)
+setkey(dt_bench_key, group)
+metodo2 <- function() {
+  dt_bench_key[c("A", "B", "C"), .(mean_val = mean(value1), count = .N), by = category]
+}
+
+# Método 3: Pre-filtrar y luego agrupar
+metodo3 <- function() {
+  dt_filtrado <- dt_bench[group %in% c("A", "B", "C")]
+  dt_filtrado[, .(mean_val = mean(value1), count = .N), by = category]
+}
+
+# Benchmark
+benchmark_metodos <- microbenchmark(
+  "Sin optimización" = metodo1(),
+  "Con setkey" = metodo2(),  
+  "Pre-filtrar" = metodo3(),
+  times = 20
+)
+
+print(benchmark_metodos)
+
+# Visualizar resultados
+if(require(ggplot2, quietly = TRUE)) {
+  autoplot(benchmark_metodos) + 
+    labs(title = "Comparación de Métodos de Agregación",
+         y = "Tiempo (milisegundos)") +
+    theme_minimal()
+}
+```
+
+### 3. **Memory Profiling**
+
+```{r}
+#| label: memory-profiling
+#| echo: true
+
+# Función para medir uso de memoria
+measure_memory <- function(expr) {
+  gc()  # Limpiar garbage collector
+  mem_before <- as.numeric(object.size(big_dt))
+  result <- expr
+  mem_after <- as.numeric(object.size(big_dt))
+  return(list(result = result, memory_change = mem_after - mem_before))
+}
+
+# Comparar modificación por referencia vs copia
+cat("=== Modificación por referencia ===\n")
+mem_ref <- measure_memory({
+  big_dt[, new_col_ref := value1 * 2]
+})
+cat("Cambio en memoria:", mem_ref$memory_change, "bytes\n")
+
+# Limpiar columna
+big_dt[, new_col_ref := NULL]
+
+cat("\n=== Crear nueva tabla ===\n")
+mem_copy <- measure_memory({
+  new_dt <- big_dt[, .(id, group, value1, new_col_copy = value1 * 2)]
+})
+cat("Cambio en memoria:", mem_copy$memory_change, "bytes\n")
+```
+
+## Los Mandamientos de data.table {#sec-mandamientos}
+
+### ✅ **QUÉ HACER (Do's)**
+
+#### 1. **Usa `:=` para Modificaciones**
+
+```{r}
+#| label: dos-assignment
+#| echo: true
+#| eval: false
+
+# ✅ CORRECTO: Modificación por referencia
+dt[, nueva_columna := valor_calculado]
+dt[condicion, columna_existente := nuevo_valor]
+
+# ❌ INCORRECTO: Crear copias innecesarias
+dt <- dt[, .(todas_las_columnas, nueva_columna = valor_calculado)]
+```
+
+#### 2. **Utiliza `setkey()` para Datos Grandes**
+
+```{r}
+#| label: dos-setkey
+#| echo: true
+#| eval: false
+
+# ✅ CORRECTO: Para joins y filtros repetitivos
+setkey(dt, columna_clave)
+resultado <- dt[valores_buscados]
+
+# ❌ INCORRECTO: Filtros lentos en datos grandes
+resultado <- dt[columna_clave %in% valores_buscados]
+```
+
+#### 3. **Aprovecha la Vectorización**
+
+```{r}
+#| label: dos-vectorization
+#| echo: true
+
+# ✅ CORRECTO: Operaciones vectorizadas
+dt_demo <- data.table(x = 1:5, y = 6:10)
+dt_demo[, z := x + y]  # Vectorizado
+dt_demo[, categoria := fifelse(x > 3, "Alto", "Bajo")]  # Vectorizado rápido
+
+print(dt_demo)
+```
+
+#### 4. **Usa `.SD` para Operaciones por Grupo**
+
+```{r}
+#| label: dos-SD
+#| echo: true
+#| eval: false
+
+# ✅ CORRECTO: Aplicar función a múltiples columnas
+dt[, lapply(.SD, mean), by = grupo, .SDcols = is.numeric]
+
+# ❌ INCORRECTO: Repetir código para cada columna
+dt[, .(mean_col1 = mean(col1), mean_col2 = mean(col2), mean_col3 = mean(col3)), by = grupo]
+```
+
+### ❌ **QUÉ NO HACER (Don'ts)**
+
+#### 1. **No Uses Bucles for con data.table**
+
+```{r}
+#| label: donts-loops
+#| echo: true
+#| eval: false
+
+# ❌ INCORRECTO: Bucle ineficiente
+for(i in 1:nrow(dt)) {
+  dt[i, nueva_col := alguna_funcion(dt[i, columna])]
+}
+
+# ✅ CORRECTO: Operación vectorizada
+dt[, nueva_col := alguna_funcion(columna)]
+```
+
+#### 2. **No Mezcles dplyr con data.table sin Cuidado**
+
+```{r}
+#| label: donts-dplyr
+#| echo: true
+#| eval: false
+
+# ❌ PROBLEMÁTICO: Puede forzar copias
+dt %>% mutate(nueva_col = valor) %>% filter(condicion)
+
+# ✅ CORRECTO: Sintaxis data.table pura
+dt[, nueva_col := valor][condicion]
+
+# ✅ ALTERNATIVA: dtplyr para sintaxis dplyr + performance data.table
+library(dtplyr)
+dt %>% lazy_dt() %>% mutate(nueva_col = valor) %>% filter(condicion) %>% as.data.table()
+```
+
+#### 3. **No Ignores la Gestión de Memory**
+
+```{r}
+#| label: donts-memory
+#| echo: true
+#| eval: false
+
+# ❌ INCORRECTO: Crear múltiples copias grandes
+dt_copy1 <- copy(big_dt)
+dt_copy2 <- copy(big_dt)  # Desperdicio de memoria
+
+# ✅ CORRECTO: Trabajar con referencias y copiar solo cuando necesario
+dt_trabajo <- big_dt  # Referencia
+if(necesito_preservar_original) {
+  dt_trabajo <- copy(big_dt)
+}
+```
+
+#### 4. **No Uses `rbind()` para Añadir Filas Repetitivamente**
+
+```{r}
+#| label: donts-rbind
+#| echo: true
+
+# Demostrar el problema con rbind repetitivo
+crear_tabla_ineficiente <- function(n) {
+  dt_resultado <- data.table()
+  for(i in 1:n) {
+    nueva_fila <- data.table(id = i, valor = rnorm(1))
+    dt_resultado <- rbind(dt_resultado, nueva_fila)  # ❌ MUY LENTO
+  }
+  return(dt_resultado)
+}
+
+# ✅ CORRECTO: Crear toda la tabla de una vez
+crear_tabla_eficiente <- function(n) {
+  data.table(id = 1:n, valor = rnorm(n))
+}
+
+# Comparar tiempos (con muestra pequeña para el ejemplo)
+tiempo_ineficiente <- system.time(tabla_mala <- crear_tabla_ineficiente(100))
+tiempo_eficiente <- system.time(tabla_buena <- crear_tabla_eficiente(100))
+
+cat("Método ineficiente:", round(tiempo_ineficiente[3], 4), "segundos\n")
+cat("Método eficiente:", round(tiempo_eficiente[3], 4), "segundos\n")
+cat("Diferencia:", round(tiempo_ineficiente[3] / tiempo_eficiente[3], 1), "x más lento\n")
+```
+
+## Debugging y Troubleshooting
+
+### 1. **Diagnosticar Problemas de Performance**
+
+```{r}
+#| label: debug-performance
+#| echo: true
+
+# Función helper para medir tiempo y memoria
+benchmark_operation <- function(dt, operation_name, operation) {
+  gc()  # Limpiar memoria
+  start_time <- Sys.time()
+  result <- operation
+  end_time <- Sys.time()
+  
+  cat("=== ", operation_name, " ===\n")
+  cat("Tiempo:", round(as.numeric(end_time - start_time, units = "secs"), 4), "segundos\n")
+  cat("Filas resultado:", nrow(result), "\n")
+  cat("Memoria resultado:", format(object.size(result), units = "MB"), "\n\n")
+  
+  return(result)
+}
+
+# Ejemplo de uso
+dt_test <- big_dt[1:50000]  # Muestra para testing
+
+# Operación 1: Sin optimizar
+result1 <- benchmark_operation(dt_test, "Agregación sin key", {
+  dt_test[group %in% c("A", "B"), .(avg_val = mean(value1), count = .N), by = category]
+})
+
+# Operación 2: Con key
+setkey(dt_test, group)
+result2 <- benchmark_operation(dt_test, "Agregación con key", {
+  dt_test[c("A", "B"), .(avg_val = mean(value1), count = .N), by = category]
+})
+```
+
+### 2. **Identificar Cuellos de Botella**
+
+```{r}
+#| label: debug-bottlenecks
+#| echo: true
+
+# Función compleja para analizar
+analisis_complejo <- function(dt) {
+  # Paso 1: Filtrado
+  dt_filtrado <- dt[value1 > 0 & category %in% c("A", "B", "C")]
+  
+  # Paso 2: Cálculos por grupo
+  dt_stats <- dt_filtrado[, .(
+    mean_val = mean(value2),
+    median_val = median(value2),
+    count = .N,
+    sum_val = sum(value1),
+    id_sample = sample(id, 1)  # Tomar un id representativo del grupo
+  ), by = .(group, category)]
+  
+  # Paso 3: Ranking
+  dt_stats[, rank := rank(-mean_val), by = group]
+  
+  # Paso 4: Join con lookup usando id_sample
+  resultado <- merge(dt_stats, lookup_table[1:1000], by.x = "id_sample", by.y = "id", all.x = TRUE)
+  
+  return(resultado)
+}
+
+# Medir cada componente por separado para identificar cuellos de botella
+dt_sample <- big_dt[sample(.N, 10000)]
+
+cat("Análisis de componentes:\n")
+tiempo_total <- system.time(resultado_completo <- analisis_complejo(dt_sample))
+cat("Tiempo total:", round(tiempo_total[3], 4), "segundos\n")
+```
+
+### 3. **Herramientas de Debugging**
+
+```{r}
+#| label: debug-tools
+#| echo: true
+
+# Función para inspeccionar data.table
+inspect_dt <- function(dt, name = "data.table") {
+  cat("=== Inspección de", name, "===\n")
+  cat("Dimensiones:", nrow(dt), "x", ncol(dt), "\n")
+  cat("Key:", ifelse(is.null(key(dt)), "Ninguna", paste(key(dt), collapse = ", ")), "\n")
+  cat("Índices:", length(indices(dt)), "\n")
+  cat("Memoria:", format(object.size(dt), units = "MB"), "\n")
+  cat("Clases de columnas:\n")
+  print(sapply(dt, class))
+  cat("\n")
+}
+
+# Inspeccionar nuestros datasets
+inspect_dt(big_dt, "big_dt")
+inspect_dt(lookup_table, "lookup_table")
+```
+
+## Casos de Uso Avanzados de Optimización
+
+### 1. **Optimización de Joins Grandes**
+
+```{r}
+#| label: optimize-big-joins
+#| echo: true
+
+# Preparar datos para join optimizado
+dt_left <- big_dt[sample(.N, 50000)]
+dt_right <- lookup_table[sample(.N, 10000)]
+
+# Método 1: Join básico
+tiempo_basic_join <- system.time({
+  result_basic <- merge(dt_left, dt_right, by = "id", all.x = TRUE)
+})
+
+# Método 2: Join con keys
+setkey(dt_left, id)
+setkey(dt_right, id)
+tiempo_key_join <- system.time({
+  result_key <- dt_right[dt_left]
+})
+
+# Método 3: Join con on= (sin modificar tablas)
+tiempo_on_join <- system.time({
+  result_on <- dt_left[dt_right, on = .(id)]
+})
+
+cat("Join básico:", round(tiempo_basic_join[3], 4), "segundos\n")
+cat("Join con keys:", round(tiempo_key_join[3], 4), "segundos\n") 
+cat("Join con on=:", round(tiempo_on_join[3], 4), "segundos\n")
+```
+
+### 2. **Optimización de Operaciones Temporales**
+
+```{r}
+#| label: optimize-temporal
+#| echo: true
+
+# Optimizar consultas temporales
+dt_temporal <- copy(time_series_dt)
+
+# Sin optimizar: filtro por rango de fechas
+tiempo_sin_key <- system.time({
+  result_no_key <- dt_temporal[timestamp >= as.POSIXct("2024-01-01") & 
+                              timestamp < as.POSIXct("2024-02-01")]
+})
+
+# Con key temporal
+setkey(dt_temporal, timestamp)
+tiempo_con_key <- system.time({
+  result_con_key <- dt_temporal[.(seq(as.POSIXct("2024-01-01"), 
+                                    as.POSIXct("2024-01-31"), 
+                                    by = "hour"))]
+})
+
+cat("Consulta temporal sin key:", round(tiempo_sin_key[3], 4), "segundos\n")
+cat("Consulta temporal con key:", round(tiempo_con_key[3], 4), "segundos\n")
+```
+
+## Ejercicio Final: Optimización Completa
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 8: Pipeline de Optimización
+
+Toma el siguiente código ineficiente y optimízalo usando todas las técnicas aprendidas:
+
+```r
+# Código INEFICIENTE para optimizar
+analisis_ineficiente <- function(datos) {
+  resultado_final <- data.table()
+  
+  for(grupo in unique(datos$group)) {
+    subset_grupo <- datos[datos$group == grupo]
+    
+    for(categoria in unique(subset_grupo$category)) {
+      subset_categoria <- subset_grupo[subset_grupo$category == categoria]
+      
+      stats <- data.frame(
+        group = grupo,
+        category = categoria,
+        mean_val = mean(subset_categoria$value1),
+        sum_val = sum(subset_categoria$value2),
+        count = nrow(subset_categoria)
+      )
+      
+      resultado_final <- rbind(resultado_final, stats)
+    }
+  }
+  
+  return(resultado_final)
+}
+```
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 8
+
+```{r}
+#| label: solucion-ejercicio-8
+#| echo: true
+
+# Código OPTIMIZADO
+analisis_eficiente <- function(datos) {
+  # Una sola operación vectorizada que reemplaza todos los bucles
+  datos[, .(
+    mean_val = mean(value1),
+    sum_val = sum(value2),
+    count = .N
+  ), by = .(group, category)]
+}
+
+# Comparar rendimiento
+dt_test <- big_dt[sample(.N, 10000)]  # Muestra para el test
+
+# Método original (simulado, sin los bucles para evitar demora)
+tiempo_ineficiente <- system.time({
+  # Simulamos el método ineficiente pero de forma más rápida
+  result_old <- dt_test[, {
+    temp_result <- data.table()
+    for(cat in unique(category)) {
+      temp_stats <- data.table(
+        group = .BY[[1]],
+        category = cat,
+        mean_val = mean(value1[category == cat]),
+        sum_val = sum(value2[category == cat]),
+        count = sum(category == cat)
+      )
+      temp_result <- rbind(temp_result, temp_stats)
+    }
+    temp_result
+  }, by = group]
+})
+
+# Método optimizado
+tiempo_eficiente <- system.time({
+  result_new <- analisis_eficiente(dt_test)
+})
+
+cat("Método ineficiente (simulado):", round(tiempo_ineficiente[3], 4), "segundos\n")
+cat("Método optimizado:", round(tiempo_eficiente[3], 4), "segundos\n")
+cat("Mejora de velocidad:", round(tiempo_ineficiente[3] / tiempo_eficiente[3], 1), "x más rápido\n")
+
+# Verificar que los resultados son equivalentes
+print("Resultado optimizado:")
+print(head(result_new))
+```
+
+**Técnicas de optimización aplicadas:**
+1. **Eliminación de bucles**: Una sola operación `by` vectorizada
+2. **Sin rbind repetitivo**: El resultado se construye de una vez
+3. **Operaciones vectorizadas**: `mean()`, `sum()`, `.N` son nativamente rápidas
+4. **Sintaxis data.table pura**: Sin conversiones a/desde data.frame
+:::
+
+## Próximo Capítulo: Integración con el Ecosistema
+
+En el siguiente capítulo exploraremos:
+- **Integración con `ggplot2`** para visualización
+- **Workflows con `shiny`** para aplicaciones interactivas  
+- **Interoperabilidad con `tidymodels`** para machine learning
+- **Conexión con bases de datos** y Big Data
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **Threading automático** puede acelerar operaciones 2-8x en máquinas multi-core
+2. **`setkey()` y `setindex()`** son esenciales para datasets > 100k filas
+3. **Benchmarking sistemático** te ayuda a identificar cuellos de botella reales
+4. **Los Do's y Don'ts** te ahorrarán horas de debugging y optimización
+5. **Una sola operación data.table** puede reemplazar docenas de líneas de código tradicional
+6. **La vectorización** es siempre preferible a los bucles explícitos
+:::
+
+Has completado tu formación en optimización de `data.table`. En el próximo y último capítulo, aprenderás a integrar todo este poder con el ecosistema más amplio de R para crear soluciones completas de análisis de datos.

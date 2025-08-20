@@ -1,0 +1,333 @@
+/* Estilos personalizados para el tutorial de data.table */
+
+/* Variables de color basadas en la paleta Kinelytics */
+:root {
+  --kinelytics-primary: #1f3a3d;    /* blue-green */
+  --kinelytics-secondary: #2c5e68;  /* green */
+  --kinelytics-light: #b8d6c6;      /* light */
+  --kinelytics-blue: #507c8b;       /* blue */
+  --text-dark: #142021;              /* black */
+  --text-light: #f0f5ef;             /* white */
+  --border-light: #b8d6c6;
+  --warning-orange: #f0ad4e;
+  --success-green: #5cb85c;
+  --danger-red: #d9534f;
+}
+
+/* Mejoras generales de tipografía */
+body {
+  font-family: 'Exo 2', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.7;
+  color: var(--text-dark);
+}
+
+/* Estilos para títulos */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Exo 2', sans-serif;
+  color: var(--kinelytics-primary);
+  font-weight: 800;
+}
+
+h1 {
+  border-bottom: 3px solid var(--kinelytics-primary);
+  padding-bottom: 10px;
+}
+
+/* Mejoras para código */
+code {
+  font-family: 'Fira Mono', 'Monaco', 'Menlo', monospace;
+  background-color: var(--kinelytics-light);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 0.9em;
+}
+
+/* Bloques de código */
+pre {
+  background-color: var(--kinelytics-light);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 15px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* Callouts personalizados */
+.callout {
+  border-radius: 8px;
+  margin: 1.5em 0;
+  padding: 1em;
+  border-left: 5px solid;
+}
+
+.callout-tip {
+  background-color: #f0f8ff;
+  border-left-color: var(--kinelytics-blue);
+}
+
+.callout-note {
+  background-color: var(--kinelytics-light);
+  border-left-color: var(--kinelytics-primary);
+}
+
+.callout-important {
+  background-color: #fff8dc;
+  border-left-color: var(--warning-orange);
+}
+
+.callout-warning {
+  background-color: #fff4e6;
+  border-left-color: #f39c12;
+}
+
+/* Tablas mejoradas */
+table {
+  border-collapse: collapse;
+  margin: 1.5em 0;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+th {
+  background-color: var(--kinelytics-primary);
+  color: var(--text-light);
+  padding: 12px;
+  text-align: left;
+  font-weight: 600;
+}
+
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+tr:nth-child(even) {
+  background-color: #f8f9fa;
+}
+
+tr:hover {
+  background-color: var(--kinelytics-light);
+}
+
+/* Navegación lateral */
+.sidebar-navigation {
+  background-color: var(--kinelytics-light);
+}
+
+.sidebar-navigation .active {
+  background-color: var(--kinelytics-secondary);  /* Menos oscuro que primary */
+  color: var(--text-light);
+}
+
+/* Mejoras adicionales para navegación */
+.sidebar nav[role=doc-toc] ul > li > a.active,
+.sidebar .sidebar-item-container .active {
+  background-color: var(--kinelytics-secondary) !important;
+  color: var(--text-light) !important;
+  font-weight: 600;
+}
+
+.sidebar nav[role=doc-toc] ul > li > a:hover {
+  background-color: var(--kinelytics-light);
+  color: var(--kinelytics-primary);
+}
+
+/* Enlaces */
+a {
+  color: var(--kinelytics-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--kinelytics-secondary);
+  text-decoration: underline;
+}
+
+/* Botones */
+.btn {
+  background-color: var(--kinelytics-primary);
+  color: var(--text-light);
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9em;
+}
+
+.btn:hover {
+  background-color: var(--kinelytics-secondary);
+}
+
+/* Gráficos y figuras */
+.figure {
+  text-align: center;
+  margin: 2em 0;
+}
+
+.figure img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+/* Listas de tareas (checkboxes) */
+.task-list-item {
+  list-style: none;
+}
+
+.task-list-item input[type="checkbox"] {
+  margin-right: 8px;
+  transform: scale(1.2);
+}
+
+/* Panel de tabs */
+.panel-tabset {
+  margin: 1.5em 0;
+}
+
+.panel-tabset .nav-tabs {
+  border-bottom: 2px solid var(--kinelytics-primary);
+}
+
+.panel-tabset .nav-link.active {
+  background-color: var(--kinelytics-secondary);
+  color: var(--text-light);
+  border-color: var(--kinelytics-secondary);
+}
+
+/* Resaltado de sintaxis personalizado para R */
+.sourceCode .dt { color: var(--kinelytics-primary); font-weight: bold; }
+.sourceCode .fu { color: var(--kinelytics-blue); }
+.sourceCode .st { color: #d73027; }
+.sourceCode .co { color: #737373; font-style: italic; }
+.sourceCode .op { color: #5e5e5e; }
+
+/* Mejoras para impresión */
+@media print {
+  .sidebar-navigation { display: none; }
+  .quarto-title-banner { background: white !important; }
+  h1, h2, h3, h4, h5, h6 { color: black !important; }
+  
+  /* Evitar saltos de página en bloques de código */
+  pre, .callout {
+    page-break-inside: avoid;
+  }
+}
+
+/* Estilos responsivos */
+@media (max-width: 768px) {
+  body {
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  
+  h1 { font-size: 1.8em; }
+  h2 { font-size: 1.5em; }
+  h3 { font-size: 1.3em; }
+  
+  table {
+    font-size: 0.85em;
+  }
+  
+  .callout {
+    margin: 1em 0;
+    padding: 0.8em;
+  }
+}
+
+/* Animaciones sutiles */
+.callout, .btn, a {
+  transition: all 0.2s ease;
+}
+
+/* Scroll suave */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Mejoras para el índice (TOC) */
+.toc-actions {
+  background-color: var(--kinelytics-light);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+}
+
+/* Estilos para elementos destacados */
+.highlight {
+  background-color: #ffeb3b;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+/* Footer personalizado */
+.footer {
+  background-color: var(--kinelytics-primary);
+  color: var(--text-light);
+  text-align: center;
+  padding: 2em 0;
+  margin-top: 4em;
+}
+
+.footer a {
+  color: var(--text-light);
+  text-decoration: underline;
+}
+
+/* Indicadores de progreso visual */
+.progress-indicator {
+  height: 4px;
+  background: linear-gradient(to right, var(--kinelytics-primary) 0%, var(--kinelytics-light) 100%);
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+}
+
+/* Mejoras específicas para Quarto Book navigation */
+.sidebar .chapter-number {
+  color: var(--kinelytics-primary);
+  font-weight: 600;
+}
+
+.sidebar .active .chapter-number {
+  color: var(--text-light) !important;
+}
+
+/* Breadcrumbs mejorados */
+.breadcrumb .breadcrumb-item.active {
+  color: var(--kinelytics-primary);
+  font-weight: 600;
+}
+
+/* Mejoras para el título de secciones activas */
+.quarto-secondary-nav .nav-link.active {
+  background-color: var(--kinelytics-secondary) !important;
+  color: var(--text-light) !important;
+  border-radius: 6px;
+}
+
+/* Asegurar contraste en todos los elementos activos */
+.active, .current {
+  background-color: var(--kinelytics-secondary) !important;
+  color: var(--text-light) !important;
+}
+
+/* Específico para navegación de libro */
+.sidebar-item .sidebar-item-toggle.active,
+.sidebar-item .sidebar-item-container.active {
+  background-color: var(--kinelytics-secondary) !important;
+  color: var(--text-light) !important;
+}

@@ -1,0 +1,650 @@
+# Encadenamiento de Operaciones (Chaining)
+
+::: {.callout-tip icon="false"}
+## En este capítulo dominarás
+- **Encadenamiento básico** con `DT[...][...]` 
+- **Comparación** con pipes de `dplyr`
+- **Encadenamiento complejo** con múltiples transformaciones
+- **Patrones avanzados** de flujo de datos
+- **Mejores prácticas** para código legible y eficiente
+:::
+
+```{r}
+#| label: setup-cap02-encadenamiento
+#| include: false
+
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(DT)
+library(microbenchmark)
+
+# Configuración
+options(datatable.print.nrows = 8)
+options(datatable.print.class = TRUE)
+
+# Datos de ejemplo
+set.seed(42)
+
+# Dataset principal: empleados
+empleados <- data.table(
+  emp_id = 1:20,
+  nombre = paste0("Empleado_", LETTERS[1:20]),
+  departamento = rep(c("Ventas", "IT", "Marketing", "RRHH", "Finanzas"), each = 4),
+  nivel = rep(c("Junior", "Senior", "Lead", "Manager"), times = 5),
+  salario = round(runif(20, 30000, 80000), -2),
+  bonus = round(runif(20, 0, 15000), -2),
+  años_exp = sample(1:15, 20, replace = TRUE),
+  proyectos = sample(3:25, 20, replace = TRUE),
+  rating = round(runif(20, 3, 5), 1),
+  fecha_ingreso = sample(seq(as.Date("2018-01-01"), as.Date("2023-12-31"), by = "month"), 20),
+  activo = sample(c(TRUE, FALSE), 20, replace = TRUE, prob = c(0.9, 0.1))
+)
+
+# Dataset de ventas para ejemplos complejos
+ventas <- data.table(
+  venta_id = 1:10000,
+  vendedor_id = sample(1:50, 10000, replace = TRUE),
+  cliente_id = sample(1:500, 10000, replace = TRUE),
+  producto = sample(c("Laptop", "Desktop", "Tablet", "Smartphone", "Accesorios"), 
+                   10000, replace = TRUE),
+  categoria = sample(c("Hardware", "Software", "Servicios"), 10000, replace = TRUE),
+  cantidad = sample(1:10, 10000, replace = TRUE),
+  precio_unitario = round(runif(10000, 50, 2000), 2),
+  descuento = round(runif(10000, 0, 0.3), 2),
+  fecha_venta = sample(seq(as.Date("2023-01-01"), as.Date("2024-12-31"), by = "day"), 
+                      10000, replace = TRUE),
+  region = sample(c("Norte", "Sur", "Este", "Oeste", "Centro"), 10000, replace = TRUE)
+)
+
+# Calcular métricas derivadas
+empleados[, `:=`(
+  salario_total = salario + bonus,
+  productividad = round(proyectos / años_exp, 2),
+  categoria_nivel = paste(departamento, nivel, sep = "_")
+)]
+
+ventas[, `:=`(
+  valor_bruto = cantidad * precio_unitario,
+  valor_neto = cantidad * precio_unitario * (1 - descuento),
+  mes = month(fecha_venta),
+  trimestre = quarter(fecha_venta),
+  año = year(fecha_venta)
+)]
+```
+
+## Conceptos Fundamentales del Encadenamiento
+
+El encadenamiento en `data.table` permite ejecutar múltiples operaciones secuenciales en una sola expresión usando la sintaxis `DT[...][...][...]`. Cada conjunto de corchetes opera sobre el resultado del anterior.
+
+### 1. **Encadenamiento Básico**
+
+```{r}
+#| label: encadenamiento-basico
+#| echo: true
+
+# Operaciones separadas (tradicional)
+paso1 <- empleados[salario > 45000]  # Filtrar
+paso2 <- paso1[, .(empleados = .N, salario_promedio = mean(salario)), by = departamento]  # Agrupar
+resultado_separado <- paso2[order(-salario_promedio)]  # Ordenar
+
+# Misma operación encadenada
+resultado_encadenado <- empleados[
+  salario > 45000
+][
+  , .(empleados = .N, salario_promedio = round(mean(salario), 0)), by = departamento
+][
+  order(-salario_promedio)
+]
+
+print("Resultado con encadenamiento:")
+print(resultado_encadenado)
+```
+
+### 2. **Ventajas del Encadenamiento**
+
+```{r}
+#| label: ventajas-encadenamiento
+#| echo: true
+
+# Ejemplo que muestra las ventajas
+analisis_productividad <- empleados[
+  activo == TRUE & años_exp >= 3     # Solo empleados activos con experiencia
+][
+  , productividad_ajustada := pmin(productividad, 5)  # Ajustar outliers
+][
+  , .(
+    empleados = .N,
+    productividad_media = round(mean(productividad_ajustada), 2),
+    salario_total_grupo = sum(salario_total),
+    proyectos_totales = sum(proyectos)
+  ), by = .(departamento, nivel)
+][
+  productividad_media > 1.5          # Solo grupos productivos
+][
+  order(departamento, -productividad_media)
+][
+  , ranking := 1:.N                  # Agregar ranking
+]
+
+print(analisis_productividad)
+```
+
+::: {.callout-tip}
+## 💡 ¿Por qué encadenar?
+
+1. **Menos variables temporales** - No necesitas almacenar resultados intermedios
+2. **Código más compacto** - Múltiples operaciones en una expresión
+3. **Mejor rendimiento** - Menos copias en memoria
+4. **Flujo lógico claro** - Lee de arriba abajo como una receta
+:::
+
+## Comparación con dplyr Pipes
+
+Comparemos las dos aproximaciones principales para operaciones secuenciales:
+
+### 1. **Sintaxis Lado a Lado**
+
+::: {.panel-tabset}
+
+## **data.table (Chaining)**
+```{r}
+#| label: dt-chaining-example
+#| echo: true
+
+# Pipeline complejo con data.table
+pipeline_dt <- ventas[
+  año == 2024 & valor_neto > 1000    # Filtrar ventas importantes de 2024
+][
+  , .(
+    ventas_totales = sum(valor_neto),
+    unidades_totales = sum(cantidad),
+    transacciones = .N,
+    ticket_promedio = round(mean(valor_neto), 2)
+  ), by = .(region, producto)
+][
+  ventas_totales > 10000             # Solo combinaciones significativas
+][
+  order(region, -ventas_totales)
+][
+  , rank_en_region := rank(-ventas_totales), by = region
+][
+  rank_en_region <= 3                # Top 3 productos por región
+]
+
+print(head(pipeline_dt, 12))
+```
+
+## **dplyr (Pipes)**
+```{r}
+#| label: dplyr-pipes-example
+#| echo: true
+
+# Mismo pipeline con dplyr
+pipeline_dplyr <- ventas %>%
+  filter(año == 2024, valor_neto > 1000) %>%
+  group_by(region, producto) %>%
+  summarise(
+    ventas_totales = sum(valor_neto),
+    unidades_totales = sum(cantidad),
+    transacciones = n(),
+    ticket_promedio = round(mean(valor_neto), 2),
+    .groups = 'drop'
+  ) %>%
+  filter(ventas_totales > 10000) %>%
+  arrange(region, desc(ventas_totales)) %>%
+  group_by(region) %>%
+  mutate(rank_en_region = rank(desc(ventas_totales))) %>%
+  filter(rank_en_region <= 3) %>%
+  ungroup()
+
+print(head(as.data.table(pipeline_dplyr), 12))
+```
+
+:::
+
+### 2. **Benchmark de Performance**
+
+```{r}
+#| label: benchmark-chaining-vs-pipes
+#| echo: true
+#| cache: true
+
+# Crear dataset más grande para benchmark significativo
+set.seed(123)
+ventas_grandes <- data.table(
+  id = 1:100000,
+  categoria = sample(LETTERS[1:5], 100000, replace = TRUE),
+  valor = runif(100000, 10, 1000),
+  fecha = sample(seq(as.Date("2023-01-01"), as.Date("2024-12-31"), by = "day"), 100000, replace = TRUE)
+)
+ventas_grandes[, año := year(fecha)]
+
+# Benchmark
+benchmark_pipes <- microbenchmark(
+  "data.table_chain" = ventas_grandes[año == 2024][, .(suma = sum(valor)), by = categoria][order(-suma)],
+  "dplyr_pipes" = ventas_grandes %>% filter(año == 2024) %>% group_by(categoria) %>% summarise(suma = sum(valor), .groups = 'drop') %>% arrange(desc(suma)),
+  times = 20
+)
+
+print(benchmark_pipes)
+```
+
+## Patrones Avanzados de Encadenamiento
+
+### 1. **Encadenamiento con Modificación por Referencia**
+
+```{r}
+#| label: chaining-referencias
+#| echo: true
+
+# Combinar := con encadenamiento para análisis iterativo
+empleados_analisis <- copy(empleados)[
+  , salario_z := scale(salario_total)[,1], by = departamento  # Z-score por depto
+][
+  , categoria_performance := cut(salario_z, breaks = c(-Inf, -1, 1, Inf), 
+                                labels = c("Bajo", "Medio", "Alto"))
+][
+  , .(
+    empleados = .N,
+    salario_promedio = round(mean(salario_total), 0),
+    performance_dist = paste(table(categoria_performance), collapse = "/")
+  ), by = .(departamento, categoria_performance)
+][
+  order(departamento, categoria_performance)
+]
+
+print(empleados_analisis)
+```
+
+### 2. **Encadenamiento con Validaciones**
+
+```{r}
+#| label: chaining-validaciones
+#| echo: true
+
+# Pipeline con validaciones integradas
+pipeline_validado <- ventas[
+  !is.na(valor_neto) & valor_neto > 0     # Validar datos básicos
+][
+  , .N, by = año                           # Verificar distribución temporal
+][
+  , {
+    cat("Distribución por año:\n")
+    print(.SD)
+    if(min(N) < 100) warning("Pocos datos en algunos años")
+    .SD
+  }
+][
+  # Continuar con el análisis principal
+  , .(años_con_datos = .N, transacciones_totales = sum(N))
+]
+
+print(pipeline_validado)
+```
+
+### 3. **Encadenamiento con Análisis Exploratorio**
+
+```{r}
+#| label: chaining-eda
+#| echo: true
+
+# Pipeline de análisis exploratorio
+eda_pipeline <- ventas[
+  sample(.N, 5000)                    # Muestra para EDA rápido
+][
+  , .(
+    valores_unicos = uniqueN(cliente_id),
+    valor_promedio = round(mean(valor_neto), 2),
+    valor_mediana = round(median(valor_neto), 2),
+    outliers_superiores = sum(valor_neto > quantile(valor_neto, 0.95))
+  ), by = .(region, categoria)
+][
+  , coef_variacion := round((valor_promedio - valor_mediana) / valor_promedio, 3)
+][
+  order(-valores_unicos)
+][
+  , {
+    cat("Top regiones-categorías por diversidad de clientes:\n")
+    print(.SD[1:5])
+    .SD
+  }
+]
+```
+
+### 4. **Encadenamiento con Funciones Personalizadas**
+
+```{r}
+#| label: chaining-funciones
+#| echo: true
+
+# Definir función auxiliar
+calcular_metricas_avanzadas <- function(valores) {
+  list(
+    media = round(mean(valores), 2),
+    percentil_95 = round(quantile(valores, 0.95), 2),
+    coef_asimetria = round((mean(valores) - median(valores)) / sd(valores), 3),
+    outliers_count = sum(valores > (mean(valores) + 2 * sd(valores)))
+  )
+}
+
+# Pipeline con función personalizada
+metricas_avanzadas <- ventas[
+  año == 2024 & !is.na(valor_neto)
+][
+  , calcular_metricas_avanzadas(valor_neto), by = .(region, trimestre)
+][
+  outliers_count > 5                 # Solo regiones/trimestres con anomalías
+][
+  order(region, trimestre)
+]
+
+print(metricas_avanzadas)
+```
+
+## Técnicas de Debugging en Encadenamientos
+
+### 1. **Inspección Intermedia**
+
+```{r}
+#| label: debugging-intermedio
+#| echo: true
+
+# Técnica: usar {} para inspeccionar pasos intermedios
+debug_pipeline <- empleados[
+  salario_total > 50000
+][
+  , {
+    cat("Después del filtro:", .N, "filas\n")
+    .SD
+  }
+][
+  , .(empleados = .N, salario_avg = mean(salario_total)), by = departamento
+][
+  , {
+    cat("Después de agrupar:", nrow(.SD), "grupos\n")
+    print(.SD)
+    .SD
+  }
+][
+  order(-salario_avg)
+]
+```
+
+### 2. **Validaciones en Cadena**
+
+```{r}
+#| label: debugging-validaciones
+#| echo: true
+
+# Pipeline robusto con validaciones
+pipeline_robusto <- ventas[
+  año %in% 2023:2024                      # Años válidos
+][
+  , if(.N == 0) stop("No hay datos después del filtro de años") else .SD
+][
+  !is.na(valor_neto) & valor_neto > 0     # Valores válidos
+][
+  , if(.N < 1000) warning("Pocos datos para análisis confiable") else .SD
+][
+  , .(ventas = sum(valor_neto), transacciones = .N), by = .(año, region)
+][
+  ventas > 0                              # Verificar resultados lógicos
+]
+
+print(pipeline_robusto)
+```
+
+## Ejercicios Prácticos
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 6: Pipeline de Análisis de Ventas
+
+Usando el dataset `ventas`, crea un pipeline encadenado que:
+
+1. **Filtre** ventas del último trimestre de 2024
+2. **Calcule** métricas por vendedor y región
+3. **Identifique** vendedores top (> percentil 80 en ventas)
+4. **Cree** ranking por región
+5. **Genere** un reporte final con formato
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 6
+
+```{r}
+#| label: solucion-ejercicio-6
+#| echo: true
+
+# Pipeline complejo de análisis de ventas
+reporte_ventas <- ventas[
+  año == 2024 & trimestre == 4           # 1. Q4 2024
+][
+  , .(                                    # 2. Métricas por vendedor-región
+    ventas_totales = sum(valor_neto),
+    unidades_vendidas = sum(cantidad),
+    transacciones = .N,
+    ticket_promedio = round(mean(valor_neto), 2),
+    mejor_producto = names(sort(table(producto), decreasing = TRUE))[1]
+  ), by = .(vendedor_id, region)
+][
+  ventas_totales > quantile(ventas_totales, 0.8)  # 3. Top performers (percentil 80)
+][
+  order(region, -ventas_totales)
+][
+  , ranking_regional := 1:.N, by = region         # 4. Ranking por región
+][
+  , .(                                    # 5. Reporte final formateado
+    Region = region,
+    Vendedor = paste0("ID_", vendedor_id),
+    Ranking = ranking_regional,
+    Ventas = paste0("$", format(round(ventas_totales, 0), big.mark = ",")),
+    Unidades = format(unidades_vendidas, big.mark = ","),
+    Transacciones = transacciones,
+    Ticket_Avg = paste0("$", ticket_promedio),
+    Top_Producto = mejor_producto,
+    Performance = ifelse(ranking_regional == 1, "★★★", 
+                        ifelse(ranking_regional <= 3, "★★", "★"))
+  )
+][
+  order(Region, Ranking)
+]
+
+print(reporte_ventas)
+
+# Mostrar tabla del reporte formateada para PDF
+knitr::kable(
+  reporte_ventas,
+  caption = "Reporte de Top Performers Q4 2024",
+  digits = 2,
+  format.args = list(big.mark = ",")
+)
+```
+:::
+
+::: {.callout-note icon="false"}
+## 🏋️ Ejercicio 7: Análisis de Cohortes con Encadenamiento
+
+Crea un análisis de cohortes de empleados:
+
+1. **Agrupa** empleados por año de ingreso
+2. **Calcula** retención, salarios promedios, y promociones
+3. **Identifica** cohortes exitosas vs. problemáticas
+4. **Genera** insights automáticos
+
+:::
+
+::: {.callout-tip collapse="true"}
+## 💡 Solución del Ejercicio 7
+
+```{r}
+#| label: solucion-ejercicio-7
+#| echo: true
+
+# Análisis de cohortes con encadenamiento
+library(lubridate)
+
+analisis_cohortes <- empleados[
+  !is.na(fecha_ingreso)                    # 1. Datos válidos
+][
+  , año_ingreso := year(fecha_ingreso)     # Extraer año de cohorte
+][
+  , años_en_empresa := round(as.numeric(Sys.Date() - fecha_ingreso) / 365, 1)
+][
+  , .(                                     # 2. Métricas por cohorte
+    empleados_iniciales = .N,
+    empleados_activos = sum(activo),
+    retencion_pct = round(mean(activo) * 100, 1),
+    salario_inicial_avg = round(mean(salario), 0),
+    salario_actual_avg = round(mean(salario_total), 0),
+    crecimiento_salarial = round(mean(salario_total) / mean(salario) - 1, 2),
+    años_promedio = round(mean(años_en_empresa), 1),
+    productividad_avg = round(mean(productividad), 2),
+    managers_promocionados = sum(nivel == "Manager")
+  ), by = año_ingreso
+][
+  empleados_iniciales >= 2                 # Solo cohortes con suficientes datos
+][
+  , `:=`(                                 # 3. Clasificar cohortes
+    categoria_retencion = cut(retencion_pct, 
+                             breaks = c(0, 70, 90, 100), 
+                             labels = c("Problemática", "Regular", "Exitosa")),
+    categoria_crecimiento = ifelse(crecimiento_salarial > 0.15, "Alto", 
+                                 ifelse(crecimiento_salarial > 0.05, "Medio", "Bajo"))
+  )
+][
+  order(año_ingreso)
+][
+  , {                                     # 4. Generar insights automáticos
+    cat("=== INSIGHTS DE COHORTES ===\n\n")
+    
+    cohorte_mejor <- .SD[which.max(retencion_pct * crecimiento_salarial)]
+    cohorte_peor <- .SD[which.min(retencion_pct * (1 + crecimiento_salarial))]
+    
+    cat("🏆 MEJOR COHORTE:", cohorte_mejor$año_ingreso, "\n")
+    cat("   • Retención:", cohorte_mejor$retencion_pct, "%\n")
+    cat("   • Crecimiento salarial:", cohorte_mejor$crecimiento_salarial * 100, "%\n\n")
+    
+    cat("⚠️  COHORTE PROBLEMÁTICA:", cohorte_peor$año_ingreso, "\n")
+    cat("   • Retención:", cohorte_peor$retencion_pct, "%\n")
+    cat("   • Crecimiento salarial:", cohorte_peor$crecimiento_salarial * 100, "%\n\n")
+    
+    cat("📊 RESUMEN GENERAL:\n")
+    cat("   • Retención promedio:", round(mean(retencion_pct), 1), "%\n")
+    cat("   • Cohortes exitosas:", sum(categoria_retencion == "Exitosa"), "de", .N, "\n")
+    cat("   • Managers promocionados:", sum(managers_promocionados), "total\n\n")
+    
+    .SD
+  }
+]
+
+print(analisis_cohortes[, .(año_ingreso, empleados_iniciales, retencion_pct, 
+                           crecimiento_salarial, categoria_retencion, categoria_crecimiento)])
+```
+:::
+
+## Mejores Prácticas para Encadenamiento
+
+### 1. **Legibilidad vs. Performance**
+
+```{r}
+#| label: mejores-practicas-legibilidad
+#| echo: true
+#| eval: false
+
+# ✅ HACER: Encadenamiento legible con líneas separadas
+resultado <- datos[
+  filtro_simple & condicion_clara
+][
+  , .(metrica1 = func1(col1), metrica2 = func2(col2)), by = grupo
+][
+  order(-metrica1)
+][
+  1:10
+]
+
+# ❌ EVITAR: Una línea muy larga
+resultado <- datos[filtro & condicion][, .(m1 = f1(c1), m2 = f2(c2)), by = g][order(-m1)][1:10]
+
+# ✅ HACER: Comentarios para pasos complejos
+resultado <- datos[
+  filtro_complejo                    # Paso 1: filtrar casos válidos
+][
+  , calculo_complejo(), by = grupo   # Paso 2: agregaciones por grupo
+][
+  post_procesamiento()               # Paso 3: ajustes finales
+]
+```
+
+### 2. **Cuándo NO usar encadenamiento**
+
+```{r}
+#| label: cuando-no-encadenar
+#| echo: true
+#| eval: false
+
+# ❌ Evitar: Lógica muy compleja en una cadena
+# Mejor usar pasos separados para debugging
+paso1 <- datos[filtro_complejo_con_multiples_condiciones]
+paso2 <- paso1[, calculo_muy_complejo_con_multiples_funciones(), by = multiples_grupos]
+paso3 <- paso2[post_procesamiento_complejo_con_validaciones()]
+
+# ❌ Evitar: Cadenas que modifican el objeto original sin copy()
+# Peligroso si necesitas preservar datos originales
+datos_originales[, nueva_col := calculo()][filtro][, otra_col := otro_calculo()]
+
+# ✅ Hacer: Usar copy() cuando modifiques
+datos_procesados <- copy(datos_originales)[
+  , nueva_col := calculo()
+][
+  filtro
+][
+  , otra_col := otro_calculo()
+]
+```
+
+### 3. **Optimización de Performance**
+
+```{r}
+#| label: optimizacion-performance
+#| echo: true
+#| eval: false
+
+# ✅ HACER: Filtrar temprano para reducir datos
+datos[
+  filtro_restrictivo               # Reduce datos primero
+][
+  calculo_costoso(), by = grupo    # Luego opera en menos datos
+]
+
+# ❌ EVITAR: Cálculos costosos antes de filtrar
+datos[
+  calculo_costoso(), by = grupo    # Opera en todos los datos
+][
+  filtro_restrictivo               # Filtra después
+]
+
+# ✅ HACER: Usar .SDcols para limitar columnas en operaciones costosas
+datos[
+  filtro
+][
+  , lapply(.SD, operacion_costosa), by = grupo, .SDcols = columnas_necesarias
+]
+```
+
+---
+
+::: {.callout-important}
+## 🎯 Puntos Clave de Este Capítulo
+
+1. **El encadenamiento** hace el código más conciso y eficiente al eliminar variables temporales
+2. **Cada `[...]`** opera sobre el resultado del anterior, creando un flujo lógico claro
+3. **Performance**: `data.table` chaining es más rápido que `dplyr` pipes para la mayoría de operaciones
+4. **Legibilidad**: Usar líneas separadas y comentarios para encadenamientos complejos
+5. **Debugging**: Insertar `{}` para inspeccionar resultados intermedios
+6. **Filtrar temprano** para optimizar performance en cadenas largas
+:::
+
+El encadenamiento es una técnica fundamental que, una vez dominada, hace que tu código `data.table` sea más elegante y eficiente. En el próximo capítulo exploraremos cómo combinar múltiples tablas usando joins.
