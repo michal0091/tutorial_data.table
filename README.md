@@ -165,6 +165,6 @@ Este tutorial está bajo licencia [MIT](LICENSE). Siéntete libre de usarlo, mod
 
 ---
 
-*Última actualización: Diciembre 2024*  
+*Última actualización: Agosto 2025*  
 *Versión del tutorial: 1.0*  
 *Compatible con data.table >= 1.14.0*
