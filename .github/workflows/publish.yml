@@ -55,6 +55,14 @@ jobs:
             any::arrow
             any::RSQLite
             any::DBI
+            any::viridis
+            any::tidymodels
+            any::recipes
+            any::parsnip
+            any::workflows
+            any::yardstick
+            any::dtplyr
+            any::dplyr
 
       - name: Setup Quarto
         uses: quarto-dev/quarto-actions/setup@v2
