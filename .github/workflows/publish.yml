@@ -48,6 +48,13 @@ jobs:
             any::lubridate
             any::webshot2
             any::tictoc
+            any::microbenchmark
+            any::plotly
+            any::shiny
+            any::shinydashboard
+            any::arrow
+            any::RSQLite
+            any::DBI
 
       - name: Setup Quarto
         uses: quarto-dev/quarto-actions/setup@v2
