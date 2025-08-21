@@ -911,6 +911,3 @@ print(roi_estrategias)
 
 Las funciones especiales de `data.table` te dan superpoderes para análisis complejos. En el próximo capítulo exploraremos las técnicas de reshape que complementan perfectamente estas funciones para transformaciones de datos avanzadas.
 
-<function_calls>
-<invoke name="TodoWrite">
-<parameter name="todos">[{"content": "Reorganizar M\u00f3dulo 1: dividir fundamentos en sintaxis y s\u00edmbolos", "status": "completed", "id": "1"}, {"content": "Crear cap01-simbolos.qmd para s\u00edmbolos especiales del M\u00f3dulo 1", "status": "completed", "id": "1-new"}, {"content": "Reorganizar M\u00f3dulo 2: dividir en encadenamiento y joins", "status": "completed", "id": "2"}, {"content": "Crear cap03-joins-avanzados.qmd para joins avanzados del M\u00f3dulo 3", "status": "completed", "id": "3-1"}, {"content": "Crear cap03-funciones-especiales.qmd para funciones especiales del M\u00f3dulo 3", "status": "completed", "id": "3-2"}, {"content": "Crear cap03-reshape.qmd para reshape del M\u00f3dulo 3", "status": "in_progress", "id": "3-3"}, {"content": "Reorganizar M\u00f3dulo 4: dividir en performance y buenas pr\u00e1cticas", "status": "pending", "id": "4"}, {"content": "Reorganizar M\u00f3dulo 5: dividir en visualizaci\u00f3n y aplicaciones", "status": "pending", "id": "5"}]

@@ -686,7 +686,3 @@ max_exp <- empleados[, max(años_exp), by = dept]
 :::
 
 Con el dominio de estos símbolos especiales, tienes las herramientas para realizar análisis de datos sofisticados y eficientes. En el próximo módulo exploraremos técnicas de manipulación intermedia como encadenamiento y joins.
-
-<function_calls>
-<invoke name="TodoWrite">
-<parameter name="todos">[{"content": "Reorganizar M\u00f3dulo 1: dividir fundamentos en sintaxis y s\u00edmbolos", "status": "completed", "id": "1"}, {"content": "Crear cap01-simbolos.qmd para s\u00edmbolos especiales del M\u00f3dulo 1", "status": "completed", "id": "1-new"}, {"content": "Reorganizar M\u00f3dulo 2: dividir en encadenamiento y joins", "status": "in_progress", "id": "2"}, {"content": "Reorganizar M\u00f3dulo 3: dividir en joins avanzados, funciones especiales y reshape", "status": "pending", "id": "3"}, {"content": "Reorganizar M\u00f3dulo 4: dividir en performance y buenas pr\u00e1cticas", "status": "pending", "id": "4"}, {"content": "Reorganizar M\u00f3dulo 5: dividir en visualizaci\u00f3n y aplicaciones", "status": "pending", "id": "5"}]
